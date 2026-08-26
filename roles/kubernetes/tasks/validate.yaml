@@ -1,0 +1,79 @@
+---
+# =============================================================================
+# Kubernetes — Validate cluster health
+# =============================================================================
+
+- name: "kubernetes | validate | Check kubectl available"
+  ansible.builtin.command:
+    cmd: which kubectl
+  changed_when: false
+
+- name: "kubernetes | validate | Verify kubeconfig exists"
+  ansible.builtin.stat:
+    path: "{{ kubernetes_kubeconfig }}"
+  register: _k8s_kubeconfig_stat
+
+- name: "kubernetes | validate | Fail if kubeconfig missing"
+  ansible.builtin.fail:
+    msg: "Kubeconfig not found at {{ kubernetes_kubeconfig }}"
+  when: not _k8s_kubeconfig_stat.stat.exists
+
+- name: "kubernetes | validate | Verify cluster reachable"
+  ansible.builtin.command:
+    cmd: kubectl cluster-info
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+
+- name: "kubernetes | validate | Get node list"
+  ansible.builtin.command:
+    cmd: kubectl get nodes -o wide --no-headers
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+  register: _k8s_nodes
+
+- name: "kubernetes | validate | Check for not-ready nodes"
+  ansible.builtin.shell:
+    cmd: |
+      kubectl get nodes --no-headers | grep -v ' Ready' || true
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+  register: _k8s_not_ready
+
+- name: "kubernetes | validate | Warn about not-ready nodes"
+  ansible.builtin.debug:
+    msg: "WARNING — Not-ready nodes detected: {{ _k8s_not_ready.stdout_lines }}"
+  when: _k8s_not_ready.stdout | length > 0
+
+- name: "kubernetes | validate | Get server version"
+  ansible.builtin.command:
+    cmd: kubectl version -o json
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+  register: _k8s_version_json
+
+- name: "kubernetes | validate | Parse server version"
+  ansible.builtin.set_fact:
+    _k8s_server_version: "{{ (_k8s_version_json.stdout | from_json).serverVersion.gitVersion }}"
+    _k8s_server_minor: "{{ ((_k8s_version_json.stdout | from_json).serverVersion.minor | regex_replace('[^0-9]', '')) | int }}"
+
+- name: "kubernetes | validate | Check minimum version compatibility"
+  ansible.builtin.assert:
+    that:
+      - _k8s_server_minor | int >= kubernetes_minimum_minor_version | int
+    fail_msg: >-
+      Kubernetes {{ _k8s_server_version }} does not meet
+      the minimum version requirement (>= v1.{{ kubernetes_minimum_minor_version }}).
+    success_msg: "Kubernetes {{ _k8s_server_version }} meets minimum requirement (>= v1.{{ kubernetes_minimum_minor_version }})"
+
+- name: "kubernetes | validate | Validation summary"
+  ansible.builtin.debug:
+    msg:
+      - "Kubernetes validation PASSED"
+      - "Nodes: {{ _k8s_nodes.stdout_lines | length }}"
+      - "Not-ready: {{ _k8s_not_ready.stdout_lines | length }}"
+      - "Version: {{ _k8s_server_version }}"

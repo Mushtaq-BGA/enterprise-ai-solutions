@@ -1,0 +1,27 @@
+---
+# =============================================================================
+# Storage — Backend Registry
+# =============================================================================
+# One selector → resolve → run the matching backend role. Each backend role
+# deploys its provisioner and marks its StorageClass the cluster default; the
+# rest of the stack provisions against the default SC and never names a backend.
+#
+# Add a backend: append a row here (name → role) and create roles/<role>/.
+# The resolver, the meta-role and config/components.yaml stay generic.
+# =============================================================================
+
+# Backend selector (override in global_config.yaml). Default local-path (dev).
+storage_backend: "local-path"
+
+# Registry. 'role: ~' = no role to run (local-path is provided by Kubespray).
+storage_backends:
+  - name: local-path
+    role: null
+  - name: nfs
+    role: nfs_storage
+  - name: ceph
+    role: rook_ceph_storage
+
+# Resolver outputs (set by tasks/resolve.yaml — do not set by hand):
+#   _resolved_storage_backend  normalized selector
+#   _resolved_storage_role     role to run, or none (local-path)

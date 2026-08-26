@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# Istio — Validate
+# =============================================================================
+
+- name: "istio | Check Helm release exists"
+  kubernetes.core.helm_info:
+    name: "{{ istio_helm_release_name }}"
+    release_namespace: "{{ istio_namespace }}"
+  register: _istio_release
+  failed_when: false
+
+- name: "istio | Assert Helm release is deployed"
+  ansible.builtin.assert:
+    that:
+      - _istio_release.status is defined
+      - _istio_release.status is not none
+    fail_msg: "Istio Helm release '{{ istio_helm_release_name }}' not found in {{ istio_namespace }}"
+    success_msg: "Istio Helm release '{{ istio_helm_release_name }}' is deployed"
+
+- name: "istio | Check istiod deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: istiod
+    namespace: "{{ istio_namespace }}"
+  register: _istiod_deploy
+
+- name: "istio | Assert istiod is available"
+  ansible.builtin.assert:
+    that:
+      - _istiod_deploy.resources | length > 0
+      - _istiod_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+    fail_msg: "istiod deployment not available in {{ istio_namespace }}"
+    success_msg: "istiod is running and available"
+
+- name: "istio | Check ztunnel DaemonSet (ambient mode data plane)"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: ztunnel
+    namespace: "{{ istio_namespace }}"
+  register: _ztunnel_ds
+
+- name: "istio | Assert ztunnel DaemonSet is fully scheduled"
+  ansible.builtin.assert:
+    that:
+      - _ztunnel_ds.resources | length > 0
+      - _ztunnel_ds.resources[0].status.numberReady | default(0) > 0
+      - _ztunnel_ds.resources[0].status.numberReady == _ztunnel_ds.resources[0].status.desiredNumberScheduled
+    fail_msg: >-
+      ztunnel DaemonSet is not fully ready in {{ istio_namespace }}.
+      Ready: {{ _ztunnel_ds.resources[0].status.numberReady | default(0) }},
+      Desired: {{ _ztunnel_ds.resources[0].status.desiredNumberScheduled | default(0) }}
+    success_msg: >-
+      ztunnel DaemonSet is fully scheduled
+      ({{ _ztunnel_ds.resources[0].status.numberReady }} / {{ _ztunnel_ds.resources[0].status.desiredNumberScheduled }} ready)
+
+- name: "istio | Check mesh-wide PeerAuthentication"
+  kubernetes.core.k8s_info:
+    api_version: security.istio.io/v1
+    kind: PeerAuthentication
+    name: default
+    namespace: "{{ istio_namespace }}"
+  register: _istio_peerauth
+
+- name: "istio | Assert mutual TLS is enforced ({{ istio_mtls_mode }})"
+  ansible.builtin.assert:
+    that:
+      - _istio_peerauth.resources | length > 0
+      - _istio_peerauth.resources[0].spec.mtls.mode == istio_mtls_mode
+    fail_msg: >-
+      Mesh-wide PeerAuthentication 'default' in {{ istio_namespace }} is missing or
+      not set to {{ istio_mtls_mode }}
+      (found: {{ _istio_peerauth.resources[0].spec.mtls.mode | default('absent') }})
+    success_msg: "Mesh-wide mutual TLS is enforced ({{ istio_mtls_mode }})"

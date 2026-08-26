@@ -1,0 +1,52 @@
+---
+envoy_gateway_version: "1.7.1"
+envoy_gateway_namespace: "envoy-gateway-system"
+envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
+envoy_gateway_wait_timeout: "300s"
+
+# Gateway resource
+gateway_create: true
+gateway_name: "eg-gateway"
+gateway_namespace: "envoy-gateway-system"
+
+# Default request timeout for routes attached to the gateway.
+# Envoy's built-in default is 15s which is too aggressive for LLM responses
+# (a Llama-3-8B completion with 512 output tokens on CPU easily takes 30-60s).
+# Applied as a Gateway-scoped BackendTrafficPolicy; individual HTTPRoutes
+# can override via their own timeouts.request / timeouts.backendRequest.
+gateway_request_timeout: "600s"
+
+# Authentication
+auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
+
+# Routes that must bypass auth even when auth_provider != none.
+# Each entry: {name: <policy-name>, namespace: <route-ns>, route: <HTTPRoute-name>}
+# The role creates a SecurityPolicy per entry that overrides the gateway-level policy
+# for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
+gateway_no_auth_routes: []
+
+# Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
+keycloak_hostname: "keycloak.{{ base_domain_name }}"
+keycloak_realm: "inference"
+
+# TLS / Domain — HTTPS is mandatory, there is no plaintext mode
+gateway_tls_mode: "selfsigned"        # selfsigned | custom
+base_domain_name: "inference-example.com"
+gateway_tls_cert_file: ""
+gateway_tls_key_file: ""
+gateway_tls_secret_name: "gateway-tls"
+
+# Internal root CA (selfsigned mode). The wildcard serving leaf chains to this
+# root, so operators import ONE cert (exported to gateway_ca_export_path) to
+# trust every hostname across leaf rotations.
+gateway_ca_bootstrap_issuer_name: "gateway-ca-bootstrap"
+gateway_ca_cert_name: "ai-solutions-ca"
+gateway_ca_secret_name: "ai-solutions-ca"
+gateway_ca_common_name: "AI Solutions Root CA"
+gateway_ca_duration: "87600h"         # 10y root
+gateway_ca_renew_before: "720h"       # 30d
+gateway_ca_export_path: "{{ log_dir }}/{{ gateway_ca_cert_name }}.crt"
+
+# Foreign var (canonical owner: cert_manager) — namespace holding the root CA
+# secret, which is cert-manager's cluster-resource-namespace.
+certmanager_namespace: "cert-manager"

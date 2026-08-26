@@ -1,0 +1,271 @@
+---
+# =============================================================================
+# NFS Storage — Install
+# =============================================================================
+# 1. Set up NFS server on the designated node (delegate_to nfs_server group)
+# 2. Install nfs-common on all cluster nodes (delegate_to kube_node)
+# 3. Install nfs-subdir-external-provisioner via Helm (localhost)
+# 4. Set StorageClass as default (localhost)
+# =============================================================================
+
+# ─── Resolve NFS server host ────────────────────────────────────────────
+# The nfs_server inventory group designates which host runs NFS.
+# Fall back to first kube_control_plane if nfs_server group is empty.
+
+- name: "nfs_storage | Resolve NFS server target"
+  ansible.builtin.set_fact:
+    _nfs_target: >-
+      {%- if groups['nfs_server'] | default([]) | length > 0 -%}
+        {{ groups['nfs_server'] | first }}
+      {%- elif groups['kube_control_plane'] | default([]) | length > 0 -%}
+        {{ groups['kube_control_plane'] | first }}
+      {%- else -%}
+        localhost
+      {%- endif -%}
+
+- name: "nfs_storage | Resolve NFS server IP"
+  ansible.builtin.set_fact:
+    nfs_server: >-
+      {%- if nfs_server | default('', true) | length > 0 -%}
+        {{ nfs_server | trim }}
+      {%- elif hostvars[_nfs_target | trim]['ansible_host'] is defined -%}
+        {{ hostvars[_nfs_target | trim]['ansible_host'] }}
+      {%- else -%}
+        {{ _nfs_target | trim }}
+      {%- endif -%}
+
+- name: "nfs_storage | Display target"
+  ansible.builtin.debug:
+    msg: "NFS server: {{ nfs_server | trim }} (host={{ _nfs_target | trim }}, path={{ nfs_path }})"
+
+# ─── Validate ──────────────────────────────────────────────────────────
+
+- name: "nfs_storage | Validate configuration"
+  ansible.builtin.assert:
+    that:
+      - nfs_server | default('', true) | trim | length > 0
+      - _nfs_target | trim != ''
+    fail_msg: "nfs_server could not be resolved. Add hosts to the nfs_server group in inventory."
+
+# ─── Check if already installed ─────────────────────────────────────────
+
+- name: "nfs_storage | Check for existing Helm release"
+  kubernetes.core.helm_info:
+    name: nfs-subdir-external-provisioner
+    release_namespace: "{{ nfs_provisioner_namespace }}"
+  register: _nfs_existing
+  failed_when: false
+
+- name: "nfs_storage | Check StorageClass"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ nfs_storageclass_name }}"
+  register: _nfs_sc_existing
+  failed_when: false
+
+- name: "nfs_storage | Set presence facts"
+  ansible.builtin.set_fact:
+    _nfs_release_present: "{{ (_nfs_existing.status | default({})) | length > 0 }}"
+    _nfs_sc_present: "{{ (_nfs_sc_existing.resources | default([])) | length > 0 }}"
+
+- name: "nfs_storage | Already installed — skip"
+  when: _nfs_release_present | bool and _nfs_sc_present | bool
+  ansible.builtin.debug:
+    msg: "NFS Storage already present (Helm release + StorageClass). Skipping."
+
+# ─── Install nfs-common on ALL cluster nodes ─────────────────────────────
+# Always run — a new worker may be missing /sbin/mount.nfs even if the
+# StorageClass already exists.
+
+- name: "nfs_storage | Install NFS client packages on cluster nodes"
+  ansible.builtin.package:
+    name: "{{ 'nfs-common' if ansible_os_family == 'Debian' else 'nfs-utils' }}"
+    state: present
+    update_cache: "{{ true if ansible_os_family == 'Debian' else omit }}"
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['kube_node'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ─── Set up NFS server (delegate_to the nfs_server host) ────────────────
+
+- name: "nfs_storage | Install"
+  when: not (_nfs_release_present | bool and _nfs_sc_present | bool)
+  block:
+
+    - name: "nfs_storage | ━━━ BEGIN: NFS Storage ━━━"
+      ansible.builtin.debug:
+        msg: "Setting up NFS server on {{ _nfs_target | trim }} ({{ nfs_path }}) and installing provisioner..."
+
+    - name: "nfs_storage | Install NFS server packages"
+      ansible.builtin.package:
+        name: "{{ 'nfs-kernel-server' if ansible_os_family == 'Debian' else 'nfs-utils' }}"
+        state: present
+        update_cache: "{{ true if ansible_os_family == 'Debian' else omit }}"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    - name: "nfs_storage | Create export directory"
+      ansible.builtin.file:
+        path: "{{ nfs_path }}"
+        state: directory
+        mode: "{{ nfs_dir_mode }}"
+        owner: "{{ nfs_dir_owner }}"
+        group: "{{ nfs_dir_group }}"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    - name: "nfs_storage | Configure /etc/exports"
+      ansible.builtin.lineinfile:
+        path: /etc/exports
+        regexp: "^{{ nfs_path | regex_escape }}\\s"
+        line: "{{ nfs_path }} *({{ nfs_export_options }})"
+        create: true
+        mode: "0644"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    # ── Ensure the nfsd control filesystem is mounted ────────────────────
+    # rpc.nfsd cannot spawn kernel threads (and therefore never listens on
+    # :2049) unless /proc/fs/nfsd is mounted. When the NFS server shares a
+    # host with the Kubernetes control plane, a `kubeadm reset` / node wipe
+    # unmounts it, leaving nfs-server.service reporting active(exited) while
+    # no nfsd is actually running. Mount it explicitly before (re)starting.
+
+    - name: "nfs_storage | Ensure nfsd filesystem is mounted"
+      ansible.builtin.command: mount -t nfsd nfsd /proc/fs/nfsd
+      args:
+        creates: /proc/fs/nfsd/threads
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    # ── (Re)start NFS and always re-export ───────────────────────────────
+    # Use state=restarted (not started): the service is oneshot and reports
+    # active(exited) even when nfsd threads never came up, so `started` is a
+    # no-op that cannot recover a broken server. A restart forces rpc.nfsd to
+    # re-run now that /proc/fs/nfsd is present.
+
+    - name: "nfs_storage | Enable and restart NFS service"
+      ansible.builtin.service:
+        name: "{{ 'nfs-kernel-server' if ansible_os_family == 'Debian' else 'nfs-server' }}"
+        state: restarted
+        enabled: true
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    - name: "nfs_storage | Re-export all shares"
+      ansible.builtin.command: exportfs -ra
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+      changed_when: true
+
+    - name: "nfs_storage | Verify NFS exports"
+      ansible.builtin.command: exportfs -v
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+      changed_when: false
+      register: _nfs_verify_exports
+
+    - name: "nfs_storage | NFS exports"
+      ansible.builtin.debug:
+        msg: "{{ _nfs_verify_exports.stdout_lines }}"
+
+    # ── Wait until nfsd is actually listening before smoke-testing ───────
+    # Guards against the race where the mount succeeds but rpc.nfsd has not
+    # yet bound :2049, and turns a silent "connection refused" into a clear,
+    # fast failure on the server itself rather than a 2-minute mount timeout.
+
+    - name: "nfs_storage | Wait for nfsd to listen on :2049"
+      ansible.builtin.wait_for:
+        port: 2049
+        host: "{{ nfs_server | trim }}"
+        timeout: 60
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    # ── Smoke-test: verify a worker can mount the export ─────────────────
+
+    - name: "nfs_storage | Test NFS mount from first worker"
+      ansible.builtin.shell: |
+        set -e
+        MNT=$(mktemp -d /tmp/nfs-test.XXXXXX)
+        trap "umount -f '$MNT' 2>/dev/null; rmdir '$MNT' 2>/dev/null" EXIT
+        mount -t nfs {{ nfs_server | trim }}:{{ nfs_path }} "$MNT"
+        touch "$MNT/.nfs-test-$$"
+        rm -f "$MNT/.nfs-test-$$"
+        echo "NFS mount test passed"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['kube_node'] | first }}"
+      become: true
+      changed_when: false
+      register: _nfs_mount_test
+
+    - name: "nfs_storage | Mount test result"
+      ansible.builtin.debug:
+        msg: "{{ _nfs_mount_test.stdout | trim }}"
+
+    # ── Install Helm provisioner (runs on localhost, talks to k8s API) ────
+
+    - name: "nfs_storage | Add Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ nfs_provisioner_chart_repo_name }}"
+        repo_url: "{{ nfs_provisioner_chart_repo }}"
+
+    - name: "nfs_storage | Install nfs-subdir-external-provisioner"
+      kubernetes.core.helm:
+        name: nfs-subdir-external-provisioner
+        chart_ref: "{{ nfs_provisioner_chart_repo_name }}/nfs-subdir-external-provisioner"
+        release_namespace: "{{ nfs_provisioner_namespace }}"
+        create_namespace: true
+        chart_version: "{{ nfs_provisioner_chart_version }}"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ nfs_wait_timeout }}"
+        values:
+          nfs:
+            server: "{{ nfs_server | trim }}"
+            path: "{{ nfs_path }}"
+          storageClass:
+            name: "{{ nfs_storageclass_name }}"
+            defaultClass: "{{ nfs_storageclass_default }}"
+            reclaimPolicy: Retain
+            archiveOnDelete: true
+          tolerations:
+            - operator: Exists
+
+    # ── Wait for provisioner ─────────────────────────────────────────────
+
+    - name: "nfs_storage | Wait for provisioner deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: nfs-subdir-external-provisioner
+        namespace: "{{ nfs_provisioner_namespace }}"
+      register: _nfs_deploy
+      until:
+        - _nfs_deploy.resources | length > 0
+        - _nfs_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+      retries: 60
+      delay: 5
+
+    # ── Verify StorageClass ──────────────────────────────────────────────
+
+    - name: "nfs_storage | Verify StorageClass created"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ nfs_storageclass_name }}"
+      register: _nfs_sc
+      until: _nfs_sc.resources | length > 0
+      retries: 10
+      delay: 3
+
+    - name: "nfs_storage | ━━━ DONE: NFS Storage ━━━"
+      ansible.builtin.debug:
+        msg:
+          - "NFS Storage provisioner installed successfully."
+          - "  NFS Server: {{ nfs_server | trim }}:{{ nfs_path }}"
+          - "  StorageClass: {{ nfs_storageclass_name }} (default={{ nfs_storageclass_default }})"
+          - "  Namespace: {{ nfs_provisioner_namespace }}"

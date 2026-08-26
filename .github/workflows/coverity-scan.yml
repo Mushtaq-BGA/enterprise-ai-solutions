@@ -1,0 +1,68 @@
+name: Coverity Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      PR_number:
+        description: 'Pull request number'
+        required: true
+  push:
+    branches:
+      - main
+      - v1.0
+      - release*
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  coverity-scan:
+    name: Coverity scans
+    runs-on: [innersource.prod.amr.dind]
+    environment: d3
+    timeout-minutes: 30
+    env:
+      RAG_COVERITY_USER: ${{ secrets.RAG_COVERITY_USER }}
+      RAG_COVERITY_PASSWORD: ${{ secrets.RAG_COVERITY_PASSWORD }}
+    steps:
+    - uses: intel-innersource/frameworks.actions.certs@latest
+
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Coverity
+      uses: intel-innersource/frameworks.actions.setup-coverity@v4
+      with:
+        analysis-version: 2024.6.1
+
+    - name: Check Coverity version
+      run: coverity --version
+      shell: bash
+
+    - name: Run Coverity scan
+      id: run_coverity
+      uses: intel-innersource/frameworks.actions.coverity-analysis@v4
+      continue-on-error: true
+      with:
+        source: .
+        fail-if-issues-found: false
+        url: https://coverity.devtools.intel.com/prod15
+        project: DCAI-IaaS
+        stream: DCAI-IaaS
+        user: ${{ secrets.RAG_COVERITY_USER }}
+        password: ${{ secrets.RAG_COVERITY_PASSWORD }}
+        commit-defects: true
+        analyze-options: --enable-default --security --webapp-security --enable-audit-checkers --disable SIGMA.container_requesting_net_raw --disable SIGMA.container_running_as_root --disable SIGMA.container_sharing_host_network_namespace --disable SIGMA.custom_resource_in_default_namespace --disable SIGMA.container_filesystem_write --disable SIGMA.container_storing_secret_in_environment_variable --disable SIGMA.hardcoded_secret --disable JINJA2_AUTOESCAPE_DISABLED
+        compiler-type: python
+
+    - name: Check for Coverity scan status
+      if: steps.run_coverity.outcome != 'success'
+      run: |
+        echo "Exiting job because the Coverity scan failed."
+        exit 1
+      shell: bash
+

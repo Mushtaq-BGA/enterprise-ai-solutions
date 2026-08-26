@@ -1,0 +1,84 @@
+---
+# =============================================================================
+# Observability Role Defaults
+# =============================================================================
+# Deploys the full observability stack into the platform layer:
+#   - kube-prometheus-stack  (Prometheus + Alertmanager + Grafana + Node Exporter + kube-state-metrics)
+#   - Grafana Loki           (log aggregation, monolithic mode)
+#   - Grafana Tempo          (distributed tracing, monolithic mode)
+#   - OpenTelemetry Collector (DaemonSet — collects logs/traces from all pods)
+#   - Prometheus Adapter     (custom.metrics.k8s.io API for HPA autoscaling)
+#
+# All components run in the same namespace and share a single Grafana instance
+# that is pre-wired with Loki and Tempo datasources.
+# =============================================================================
+
+observability_namespace: "monitoring"
+
+# ── Helm repos ────────────────────────────────────────────────────────────────
+observability_prometheus_helm_repo: "https://prometheus-community.github.io/helm-charts"
+observability_grafana_helm_repo: "https://grafana-community.github.io/helm-charts"
+observability_otel_helm_repo: "https://open-telemetry.github.io/opentelemetry-helm-charts"
+
+# ── Chart versions (pinned, battle-tested) ───────────────────────────────────
+# kube-prometheus-stack 85.3.3  → Prometheus Operator v0.90.1, Prometheus v3.11.3,
+#                                 Alertmanager v0.32.1, Grafana 13.0.1-security-01
+observability_kube_prometheus_stack_version: "85.3.3"
+# Loki 6.55.0 → Loki app 3.6.7
+observability_loki_version: "6.55.0"
+# Tempo 1.24.4 → Tempo app 2.9.0
+observability_tempo_version: "1.24.4"
+# OpenTelemetry Collector 0.153.0 → otelcol app 0.151.0
+observability_otel_collector_version: "0.153.0"
+# Prometheus Adapter 4.11.0
+observability_prometheus_adapter_version: "4.11.0"
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+observability_grafana_admin_user: "admin"
+# Password managed by tasks/credentials.yaml — stored in 'observability-credentials' Secret.
+observability_grafana_admin_password: ""
+observability_grafana_hostname: "grafana.{{ base_domain_name | default('inference-example.com') }}"
+
+# ── Prometheus retention & storage ───────────────────────────────────────────
+observability_prometheus_retention: "30d"
+observability_prometheus_storage_size: "50Gi"
+
+# ── Object store credentials (set at runtime from minio-credentials Secret) ──
+# minio_namespace is a cross-role var defined in global_config.yaml.
+# Fallback here so the role doesn't fail if global_config is missing it.
+minio_namespace: "minio"
+object_store_loki_secret_key: ""
+object_store_tempo_secret_key: ""
+
+# ── Loki ─────────────────────────────────────────────────────────────────────
+# WAL + index cache PVC (chunks stored in MinIO)
+observability_loki_storage_size: "5Gi"
+observability_loki_retention_hours: 720    # 30 days
+# Memcached caches — disabled by default for SingleBinary mode.
+# Enable when scaling Loki to SimpleScalable/Distributed with multiple replicas.
+observability_loki_cache_enabled: false
+
+# ── Service ports (standard CNCF defaults — override only if your cluster differs) ──
+observability_loki_port: 3100
+observability_tempo_port: 3200
+observability_tempo_otlp_grpc_port: 4317
+observability_otel_grpc_port: 4317
+observability_otel_http_port: 4318
+observability_otel_metrics_port: 8889
+
+# ── Internal service URLs (derived from namespace + ports above) ──────────────
+observability_loki_url: "http://loki.{{ observability_namespace }}.svc.cluster.local:{{ observability_loki_port }}"
+observability_tempo_url: "http://tempo.{{ observability_namespace }}.svc.cluster.local:{{ observability_tempo_port }}"
+observability_tempo_otlp_url: "http://tempo.{{ observability_namespace }}.svc.cluster.local:{{ observability_tempo_otlp_grpc_port }}"
+
+# ── OTLP receiver endpoints (used by all instrumented services) ───────────────
+observability_otel_grpc_endpoint: "opentelemetry-collector.{{ observability_namespace }}.svc.cluster.local:{{ observability_otel_grpc_port }}"
+observability_otel_http_endpoint: "opentelemetry-collector.{{ observability_namespace }}.svc.cluster.local:{{ observability_otel_http_port }}"
+
+# ── Gateway integration ───────────────────────────────────────────────────────
+gateway_create: "{{ envoy_gateway_enabled | default(false) }}"
+gateway_name: "eg-gateway"
+gateway_namespace: "envoy-gateway-system"
+
+# ── Timeouts ──────────────────────────────────────────────────────────────────
+observability_wait_timeout: "600s"

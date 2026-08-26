@@ -1,0 +1,41 @@
+---
+apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: {{ rook_ceph_filesystem_name }}
+  namespace: {{ rook_ceph_operator_namespace }}
+spec:
+  metadataPool:
+    replicated:
+      size: {{ _rook_replica_count | trim }}
+{% if (_rook_storage_node_count | int) == 2 %}
+      requireSafeReplicaSize: false
+{% endif %}
+  dataPools:
+    - name: data0
+      failureDomain: host
+      replicated:
+        size: {{ _rook_replica_count | trim }}
+{% if (_rook_storage_node_count | int) == 2 %}
+        requireSafeReplicaSize: false
+{% endif %}
+  metadataServer:
+    activeCount: {{ rook_ceph_mds_active_count }}
+    activeStandby: {{ ((_rook_storage_node_count | int) >= 3) | lower }}
+    resources:
+      limits:
+        memory: "2Gi"
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+    placement:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: {{ rook_ceph_storage_node_label_key }}
+                  operator: In
+                  values:
+                    - {{ rook_ceph_storage_node_label_value }}
+      tolerations:
+        - operator: Exists

@@ -1,0 +1,236 @@
+---
+# =============================================================================
+# Keycloak — Install (Operator-based, no OLM)
+# =============================================================================
+
+- name: "keycloak | Check for existing operator deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: keycloak-operator
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing Keycloak StatefulSet"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing Keycloak CR"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: Keycloak
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_cr_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing admin credentials secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: keycloak-admin-secret
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_admin_secret_existing
+  failed_when: false
+
+- name: "keycloak | Already installed — skipping"
+  ansible.builtin.debug:
+    msg: "Keycloak operator and instance already deployed in {{ keycloak_namespace }} — skipping install."
+  when:
+    - _kc_existing.resources | default([]) | length > 0
+    - _kc_existing.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+    - _kc_cr_existing.resources | default([]) | length > 0
+    - _kc_sts_existing.resources | default([]) | length > 0
+    - (_kc_sts_existing.resources[0].status.readyReplicas | default(0) | int) >= (keycloak_instances | int)
+
+- name: "keycloak | Label namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ keycloak_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+- name: "keycloak | Label namespace — PSS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ keycloak_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: "baseline"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
+  when: enforce_pss | default(false) | bool
+
+- name: "keycloak | Install"
+  when: >-
+    _kc_existing.resources | default([]) | length == 0 or
+    _kc_existing.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length == 0 or
+    _kc_cr_existing.resources | default([]) | length == 0 or
+    _kc_sts_existing.resources | default([]) | length == 0 or
+    (_kc_sts_existing.resources[0].status.readyReplicas | default(0) | int) < (keycloak_instances | int)
+  block:
+    - name: "keycloak | Validate hostname is set"
+      ansible.builtin.assert:
+        that:
+          - keycloak_hostname | default('') | length > 0
+        fail_msg: >-
+          keycloak_hostname is not set. Set it in global_config.yaml or defaults
+          (e.g. "keycloak.inference-example.com").
+        success_msg: "Keycloak hostname: {{ keycloak_hostname }}"
+
+    - name: "keycloak | Create namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ keycloak_namespace }}"
+
+    # ── CRDs ──────────────────────────────────────────────────────────────────────
+
+    - name: "keycloak | Install Keycloak CRDs"
+      kubernetes.core.k8s:
+        src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/{{ item }}"
+        state: present
+      loop:
+        - keycloaks.k8s.keycloak.org-v1.yml
+        - keycloakrealmimports.k8s.keycloak.org-v1.yml
+
+    # ── Operator ──────────────────────────────────────────────────────────────────
+
+    - name: "keycloak | Deploy Keycloak Operator"
+      kubernetes.core.k8s:
+        src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
+        namespace: "{{ keycloak_namespace }}"
+        state: present
+
+    - name: "keycloak | Wait for operator rollout"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: keycloak-operator
+        namespace: "{{ keycloak_namespace }}"
+      register: _kc_operator_deploy
+      until:
+        - _kc_operator_deploy.resources | length > 0
+        - _kc_operator_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+      retries: 60
+      delay: 5
+
+    # ── Keycloak instance ─────────────────────────────────────────────────────────
+
+    # The postgresql role copies DB credentials as 'keycloak-db-secret' to
+    # the keycloak namespace. Just verify it exists.
+
+    - name: "keycloak | Verify DB credentials secret exists"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: keycloak-db-secret
+        namespace: "{{ keycloak_namespace }}"
+      register: _kc_db_secret
+      when: keycloak_db_vendor == "postgres"
+      failed_when:
+        - keycloak_db_vendor == "postgres"
+        - (_kc_db_secret.resources | default([]) | length) == 0
+
+    # ── Keycloak admin + CR ─────────────────────────────────────────────────────
+
+    - name: "keycloak | Create admin credentials secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keycloak-admin-secret
+            namespace: "{{ keycloak_namespace }}"
+          type: Opaque
+          stringData:
+            username: "{{ keycloak_admin_user }}"
+            password: "{{ keycloak_admin_password }}"
+      when: (_kc_admin_secret_existing.resources | default([]) | length) == 0
+
+    - name: "keycloak | Admin credentials secret already exists"
+      ansible.builtin.debug:
+        msg: "keycloak-admin-secret already exists — preserving existing admin password."
+      when: (_kc_admin_secret_existing.resources | default([]) | length) > 0
+
+    - name: "keycloak | Apply Keycloak CR"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+
+    - name: "keycloak | Wait for Keycloak StatefulSet readiness"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+      register: _kc_sts
+      until:
+        - _kc_sts.resources | length > 0
+        - (_kc_sts.resources[0].status.readyReplicas | default(0) | int) >= (keycloak_instances | int)
+      retries: 30
+      delay: 10
+
+    - name: "keycloak | Install complete"
+      ansible.builtin.debug:
+        msg: >-
+          Keycloak {{ keycloak_version }} operator + instance deployed in {{ keycloak_namespace }}
+          ({{ keycloak_instances }} instance(s), db={{ keycloak_db_vendor }}).
+          Realm/client configuration is owned by solution layers (e.g. keycloak_config role).
+
+# ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
+
+- name: "keycloak | Create HTTPRoute for gateway"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        parentRefs:
+          - name: "{{ gateway_name | default('eg-gateway') }}"
+            namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+        hostnames:
+          - "{{ keycloak_hostname }}"
+        rules:
+          - backendRefs:
+              - name: keycloak-service
+                port: 8080
+  when: gateway_create | default(false)
+
+- name: "keycloak | Exclude Keycloak route from gateway JWT policy"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: SecurityPolicy
+      metadata:
+        name: keycloak-no-auth
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: keycloak
+  when: gateway_create | default(false)

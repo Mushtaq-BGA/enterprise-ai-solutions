@@ -1,0 +1,57 @@
+name: Bandit Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      PR_number:
+        description: 'Pull request number'
+        required: true
+  push:
+    branches:
+      - main
+      - v1.0
+      - release*
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  bandit-scan:
+    name: Bandit security scan
+    runs-on: [innersource.prod.amr.dind]
+    container: cache-registry.caas.intel.com/cache/library/python:3.11
+    environment: d3
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+        fetch-depth: 0
+
+    - name: Install Bandit
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit[toml]
+      shell: bash
+
+    - name: Create Bandit configuration
+      run: |
+        cat > .bandit << 'EOF'
+        [bandit]
+        exclude_dirs = ['tests', 'test', 'venv', '.venv', 'node_modules']
+        skips = ['B101', 'B601']
+        EOF
+      shell: bash
+
+    - name: Run Bandit scan
+      run: |
+        bandit -r . -f json -o bandit-report.json --exit-zero
+        bandit -r . -f txt
+      shell: bash
+      continue-on-error: true
+
+    - name: Upload Bandit results
+      uses: actions/upload-artifact@v4
+      with:
+        name: bandit-security-report
+        path: bandit-report.json
+        retention-days: 30

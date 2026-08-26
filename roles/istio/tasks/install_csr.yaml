@@ -1,0 +1,183 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# =============================================================================
+# Istio — cert-manager-istio-csr bootstrap
+# =============================================================================
+# Must run before istiod (install.yaml) because istiod's caAddress points here.
+# Install order:
+#   1. Self-signed ClusterIssuer (bootstrap root)
+#   2. Intermediate CA Certificate  (istio-ca, signed by root)
+#   3. istio-ca ClusterIssuer       (backed by the secret above)
+#   4. cert-manager-istio-csr Helm  (gRPC CA server for Istio workloads)
+# =============================================================================
+
+- name: "istio | csr | Check for existing istio-csr Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ istio_csr_helm_release_name }}"
+    release_namespace: "{{ istio_csr_namespace }}"
+  register: _istio_csr_release
+  failed_when: false
+
+- name: "istio | csr | Already installed — skipping"
+  ansible.builtin.debug:
+    msg: "cert-manager-istio-csr already deployed in {{ istio_csr_namespace }} — skipping."
+  when: _istio_csr_release.status is defined and _istio_csr_release.status is not none
+
+- name: "istio | csr | Install"
+  when: _istio_csr_release.status is not defined or _istio_csr_release.status is none
+  block:
+    - name: "istio | csr | Add jetstack Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ istio_csr_helm_repo_name }}"
+        repo_url: "{{ istio_csr_helm_repo_url }}"
+
+    - name: "istio | csr | Create selfsigned-root ClusterIssuer"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: "{{ istio_csr_root_issuer_name }}"
+          spec:
+            selfSigned: {}
+
+    - name: "istio | csr | Create istio-ca Certificate (intermediate CA)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: "{{ istio_csr_ca_cert_name }}"
+            namespace: "{{ istio_csr_namespace }}"
+          spec:
+            isCA: true
+            duration: "{{ istio_csr_ca_cert_duration }}"
+            renewBefore: "{{ istio_csr_ca_cert_renew_before }}"
+            commonName: "istio-ca"
+            subject:
+              organizations:
+                - cluster.local
+                - cert-manager
+            secretName: "{{ istio_csr_ca_cert_name }}"
+            privateKey:
+              algorithm: ECDSA
+              size: 256
+            issuerRef:
+              name: "{{ istio_csr_root_issuer_name }}"
+              kind: ClusterIssuer
+              group: cert-manager.io
+
+    - name: "istio | csr | Wait for istio-ca Certificate to be ready"
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        name: "{{ istio_csr_ca_cert_name }}"
+        namespace: "{{ istio_csr_namespace }}"
+      register: _istio_ca_cert
+      until:
+        - (_istio_ca_cert.resources | default([])) | length > 0
+        - (_istio_ca_cert.resources | default([]))[0].status.conditions
+          | default([]) | selectattr('type', 'eq', 'Ready') | selectattr('status', 'eq', 'True') | list | length > 0
+      retries: 30
+      delay: 5
+
+    - name: "istio | csr | Create istio-ca ClusterIssuer (backed by intermediate CA)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: istio-ca
+          spec:
+            ca:
+              secretName: "{{ istio_csr_ca_cert_name }}"
+
+    - name: "istio | csr | Install cert-manager-istio-csr Helm chart"
+      kubernetes.core.helm:
+        name: "{{ istio_csr_helm_release_name }}"
+        chart_ref: "{{ istio_csr_helm_repo_name }}/{{ istio_csr_helm_chart_name }}"
+        release_namespace: "{{ istio_csr_namespace }}"
+        chart_version: "{{ istio_csr_helm_chart_version }}"
+        wait: false
+        timeout: "{{ istio_csr_wait_timeout }}"
+        values:
+          app:
+            certmanager:
+              issuer:
+                name: istio-ca
+                kind: ClusterIssuer
+                group: cert-manager.io
+            server:
+              serving:
+                address: "0.0.0.0"
+                # Containers cannot bind <1024 without NET_BIND_SERVICE.
+                # The Service maps containerPort 6443 → port 443.
+                port: 6443
+              # Required for ambient mode: ztunnel uses node credentials to sign
+              # workload certs on behalf of pods on that node.
+              caTrustedNodeAccounts: "{{ istio_namespace }}/ztunnel"
+            istio:
+              namespace: "{{ istio_namespace }}"
+              revisions:
+                - default
+          affinity: "{{ _platform_affinity | default({}) }}"
+
+    # The chart's ClusterRole omits namespace-scoped permissions in istio-system.
+    # v0.15+ creates "dynamic" Roles per Istio revision — the SA must be able to
+    # manage Roles/RoleBindings in istio-system as well as CertificateRequests.
+    - name: "istio | csr | Create Role for istio-system permissions"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: cert-manager-istio-csr
+            namespace: "{{ istio_namespace }}"
+          rules:
+            - apiGroups: [coordination.k8s.io]
+              resources: [leases]
+              verbs: [get, list, create, update, watch]
+            - apiGroups: [cert-manager.io]
+              resources: [certificaterequests]
+              verbs: [get, list, watch, create, delete]
+            - apiGroups: [rbac.authorization.k8s.io]
+              resources: [roles, rolebindings]
+              verbs: [get, list, watch, create, update, delete]
+
+    - name: "istio | csr | Bind Role to istio-csr ServiceAccount"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: cert-manager-istio-csr
+            namespace: "{{ istio_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: cert-manager-istio-csr
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ istio_csr_helm_release_name }}"
+              namespace: "{{ istio_csr_namespace }}"
+
+    - name: "istio | csr | Wait for istio-csr deployment to be available"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ istio_csr_helm_release_name }}"
+        namespace: "{{ istio_csr_namespace }}"
+      register: _istio_csr_deploy
+      until:
+        - (_istio_csr_deploy.resources | default([])) | length > 0
+        - (_istio_csr_deploy.resources | default([]))[0].status.conditions
+          | default([]) | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+      retries: 60
+      delay: 5

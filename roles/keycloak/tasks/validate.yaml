@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# Keycloak — Validate
+# =============================================================================
+
+- name: "keycloak | Check operator deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: keycloak-operator
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_op
+
+- name: "keycloak | Assert operator replicas ready"
+  ansible.builtin.assert:
+    that:
+      - _kc_op.resources | length > 0
+      - (_kc_op.resources[0].status.readyReplicas | default(0) | int) >= 1
+    fail_msg: "Keycloak Operator has 0 ready replicas"
+    success_msg: "Keycloak Operator has {{ _kc_op.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
+
+- name: "keycloak | Check Keycloak StatefulSet"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts
+
+- name: "keycloak | Assert Keycloak instances ready"
+  ansible.builtin.assert:
+    that:
+      - _kc_sts.resources | length > 0
+      - (_kc_sts.resources[0].status.readyReplicas | default(0) | int) >= keycloak_instances
+    fail_msg: "Keycloak has {{ _kc_sts.resources[0].status.readyReplicas | default(0) if _kc_sts.resources | length > 0 else 0 }}/{{ keycloak_instances }} ready instances"
+    success_msg: "Keycloak has {{ _kc_sts.resources[0].status.readyReplicas | default(0) }}/{{ keycloak_instances }} ready instance(s)"
+
+- name: "keycloak | Validation passed"
+  ansible.builtin.debug:
+    msg: "Keycloak {{ keycloak_version }} validation passed ({{ keycloak_instances }} instance(s) running)."

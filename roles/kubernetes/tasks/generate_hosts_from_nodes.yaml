@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Generate inventory from nodes.yaml (optional)
+# =============================================================================
+# If nodes.yaml defines control_plane nodes, render a kubespray-compatible
+# inventory. Otherwise skip — the user-maintained hosts file is used as-is.
+# =============================================================================
+
+- name: "kubernetes | nodes → inventory | Check if nodes are defined"
+  ansible.builtin.set_fact:
+    _nodes_defined: "{{ (nodes_control_plane | default([]) | length) > 0 }}"
+
+- name: "kubernetes | nodes → inventory | Generate hosts"
+  when: _nodes_defined | bool
+  block:
+    - name: "kubernetes | nodes → inventory | Validate node entries"
+      ansible.builtin.assert:
+        that:
+          - item.ip is defined
+          - item.hostname is defined
+        fail_msg: "Each node must have 'ip' and 'hostname': {{ item }}"
+      loop: "{{ nodes_control_plane + (nodes_workers | default([])) }}"
+      loop_control:
+        label: "{{ item.hostname | default('MISSING') }}"
+
+    - name: "kubernetes | nodes → inventory | Set template vars"
+      ansible.builtin.set_fact:
+        _nodes_control_plane: "{{ nodes_control_plane }}"
+        _nodes_workers: "{{ nodes_workers | default([]) }}"
+        _nodes_ssh_user: "{{ nodes_ssh_user | default('') }}"
+        _nodes_ssh_key: "{{ nodes_ssh_key | default('') }}"
+
+    - name: "kubernetes | nodes → inventory | Render hosts"
+      ansible.builtin.template:
+        src: hosts.yaml.j2
+        dest: "{{ kubespray_custom_inventory }}"
+        mode: "0644"
+        backup: true
+
+    - name: "kubernetes | nodes → inventory | Done"
+      ansible.builtin.debug:
+        msg: >-
+          Generated {{ kubespray_custom_inventory }} from nodes.yaml
+          ({{ _nodes_control_plane | length }} control-plane,
+          {{ _nodes_workers | length }} worker nodes)

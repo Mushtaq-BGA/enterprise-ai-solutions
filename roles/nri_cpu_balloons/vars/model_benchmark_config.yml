@@ -1,0 +1,243 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Model Benchmark Configuration
+# This file contains optimal CPU requirements and parallelism configurations
+# for inference models based on performance benchmarks.
+#
+# Performance Thresholds:
+#   - TTFT (Time To First Token): < 3000ms p99
+#   - TPOT (Time Per Output Token): < 100ms p99
+#
+# Benchmark Platform: r8i.96xlarge (Intel Xeon, 96 vCPUs, 4 NUMA nodes)
+
+# Model CPU requirements database
+model_cpu_requirements:
+  # Llama 3.1 8B Instruct - TP=2, 2 replicas
+  "meta-llama/Llama-3.1-8B-Instruct":
+    model_id: "meta-llama/Llama-3.1-8B-Instruct"
+    model_type: "llm"
+    model_size_category: "medium"
+
+    # CPU allocation: 32 cores per replica, 2 replicas = 64 cores total
+    optimal_cpu_cores: 32
+    min_cpu_cores: 24
+    max_cpu_cores: 40
+
+    # Parallelism configuration
+    parallelism:
+      tensor_parallel_size: 2
+      pipeline_parallel_size: 1
+      data_parallel_size: 2  # 2 replicas
+
+    # Performance characteristics
+    performance:
+      optimal_concurrency: 16
+      max_concurrency: 32
+      ttft_p99_ms: 1200
+      tpot_p99_ms: 55
+
+    # Memory requirements (BF16)
+    memory:
+      model_size_gb: 16
+      kv_cache_gb_per_user: 0.5
+      min_memory_gb: 32
+      optimal_memory_gb: 48
+
+    executor_backend: "mp"
+
+    benchmark:
+      instance_type: "2-NUMA demo system"
+      vllm_version: "0.10.2+cpu"
+      data_type: "BF16"
+      context_length: 131072
+      benchmark_date: "2026-04-17"
+      note: "TP=2, 2 replicas (32 cores each) = 64 cores total"
+
+  # Qwen 3-1.7B - TP=2, 1 replica
+  "Qwen/Qwen3-1.7B":
+    model_id: "Qwen/Qwen3-1.7B"
+    model_type: "llm"
+    model_size_category: "small"
+
+    # CPU allocation: 32 cores for 1 replica
+    optimal_cpu_cores: 32
+    min_cpu_cores: 20
+    max_cpu_cores: 40
+
+    # Parallelism configuration
+    parallelism:
+      tensor_parallel_size: 2
+      pipeline_parallel_size: 1
+      data_parallel_size: 1  # 1 replica
+
+    # Performance characteristics
+    performance:
+      optimal_concurrency: 32
+      max_concurrency: 64
+      ttft_p99_ms: 900
+      tpot_p99_ms: 45
+
+    # Memory requirements (BF16)
+    memory:
+      model_size_gb: 3.4
+      kv_cache_gb_per_user: 0.3
+      min_memory_gb: 16
+      optimal_memory_gb: 24
+
+    executor_backend: "mp"
+
+    benchmark:
+      instance_type: "2-NUMA demo system"
+      vllm_version: "0.10.2+cpu"
+      data_type: "BF16"
+      context_length: 131072
+      benchmark_date: "2026-04-17"
+      note: "TP=2, 1 replica (32 cores) = 32 cores total"
+
+  # Llama 3.2 3B - TP=1, 2 replicas
+  "meta-llama/Llama-3.2-3B-Instruct":
+    model_id: "meta-llama/Llama-3.2-3B-Instruct"
+    model_type: "llm"
+    model_size_category: "small"
+
+    # CPU allocation: 20 cores per replica, 2 replicas = 40 cores total
+    optimal_cpu_cores: 20
+    min_cpu_cores: 16
+    max_cpu_cores: 24
+
+    # Parallelism configuration
+    parallelism:
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      data_parallel_size: 2  # 2 replicas
+
+    # Performance characteristics
+    performance:
+      optimal_concurrency: 24
+      max_concurrency: 48
+      ttft_p99_ms: 800
+      tpot_p99_ms: 40
+
+    # Memory requirements (BF16)
+    memory:
+      model_size_gb: 6
+      kv_cache_gb_per_user: 0.3
+      min_memory_gb: 16
+      optimal_memory_gb: 24
+
+    executor_backend: "mp"
+
+    benchmark:
+      instance_type: "2-NUMA demo system"
+      vllm_version: "0.10.2+cpu"
+      data_type: "BF16"
+      context_length: 131072
+      benchmark_date: "2026-04-17"
+      note: "TP=1, 2 replicas (20 cores each) = 40 cores total"
+
+  # Qwen 3-4B Instruct-2507 - TP=1, 1 replica
+  "Qwen/Qwen3-4B-Instruct-2507":
+    model_id: "Qwen/Qwen3-4B-Instruct-2507"
+    model_type: "llm"
+    model_size_category: "small"
+
+    # CPU allocation: 20 cores for 1 replica
+    optimal_cpu_cores: 20
+    min_cpu_cores: 16
+    max_cpu_cores: 24
+
+    # Parallelism configuration
+    parallelism:
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      data_parallel_size: 1  # 1 replica
+
+    # Performance characteristics
+    performance:
+      optimal_concurrency: 20
+      max_concurrency: 40
+      ttft_p99_ms: 850
+      tpot_p99_ms: 42
+
+    # Memory requirements (BF16)
+    memory:
+      model_size_gb: 8
+      kv_cache_gb_per_user: 0.35
+      min_memory_gb: 16
+      optimal_memory_gb: 24
+
+    executor_backend: "mp"
+
+    benchmark:
+      instance_type: "2-NUMA demo system"
+      vllm_version: "0.10.2+cpu"
+      data_type: "BF16"
+      context_length: 131072
+      benchmark_date: "2026-04-17"
+      note: "TP=1, 1 replica (20 cores) = 20 cores total"
+
+  # Template for future models (disabled by default)
+  # "organization/model-name":
+  #   model_id: "organization/model-name"
+  #   model_type: "llm|vlm|embedding|reranker"
+  #   model_size_category: "small|medium|large|xlarge"
+  #   optimal_cpu_cores: 0
+  #   min_cpu_cores: 0
+  #   max_cpu_cores: 0
+  #   parallelism:
+  #     tensor_parallel_size: 1
+  #     pipeline_parallel_size: 1
+  #     data_parallel_size: 1
+  #   performance:
+  #     optimal_concurrency: 0
+  #     max_concurrency: 0
+  #     ttft_p99_ms: 0
+  #     tpot_p99_ms: 0
+  #   memory:
+  #     model_size_gb: 0
+  #     kv_cache_gb_per_user: 0
+  #     min_memory_gb: 0
+  #     optimal_memory_gb: 0
+  #   executor_backend: "mp|ray"
+  #   benchmark:
+  #     instance_type: ""
+  #     vllm_version: ""
+  #     data_type: ""
+  #     context_length: 0
+  #     benchmark_date: ""
+
+# Parallelism to NUMA mapping (for balloon type selection)
+# Maps tensor_parallel_size to number of NUMA nodes required
+parallelism_numa_mapping:
+  1: 1   # TP=1 requires 1 NUMA node
+  2: 2   # TP=2 requires 2 NUMA nodes
+  4: 4   # TP=4 requires 4 NUMA nodes
+  8: 8   # TP=8 requires 8 NUMA nodes
+
+# Default fallback configuration (for models without benchmark data)
+default_model_config:
+  optimal_cpu_cores: 48
+  min_cpu_cores: 24
+  parallelism:
+    tensor_parallel_size: 2
+    pipeline_parallel_size: 1
+  memory:
+    min_memory_gb: 16
+  executor_backend: "mp"
+
+# Model size category to CPU mapping (heuristic fallback)
+model_size_cpu_heuristics:
+  small:     # < 3B parameters
+    optimal_cpu_cores: 40
+    min_cpu_cores: 20
+  medium:    # 3B - 13B parameters
+    optimal_cpu_cores: 80
+    min_cpu_cores: 40
+  large:     # 13B - 70B parameters
+    optimal_cpu_cores: 160
+    min_cpu_cores: 80
+  xlarge:    # > 70B parameters
+    optimal_cpu_cores: 320
+    min_cpu_cores: 160

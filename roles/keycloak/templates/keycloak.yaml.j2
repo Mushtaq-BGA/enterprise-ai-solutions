@@ -1,0 +1,60 @@
+---
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: {{ keycloak_namespace }}
+spec:
+  instances: {{ keycloak_instances }}
+  ingress:
+    enabled: false
+  hostname:
+    # Frontend URL — how external clients (browsers, APISIX via gateway) see Keycloak.
+    # HTTPS because the gateway terminates TLS; issuer claim in tokens will be
+    # https://{{ keycloak_hostname }}/realms/<realm>.
+    hostname: https://{{ keycloak_hostname }}
+    # backchannelDynamic: requests arriving via cluster-internal DNS
+    # (e.g. apisix → keycloak-service.keycloak.svc.cluster.local:8080) use the
+    # Host header for backchannel URLs — so a token issued at
+    # https://{{ keycloak_hostname }} is still validated when introspected via
+    # the in-cluster service.  Without this, APISIX's authz-keycloak gets 400
+    # "Invalid bearer token" because iss-claim and backchannel issuer disagree.
+    backchannelDynamic: true
+  bootstrapAdmin:
+    user:
+      secret: keycloak-admin-secret
+  http:
+    httpEnabled: {{ keycloak_http_enabled | lower }}
+  proxy:
+    headers: {{ keycloak_proxy_headers }}
+{% if istio_enabled | default(false) | bool %}
+  networkPolicy:
+    enabled: false
+{% endif %}
+  db:
+    vendor: {{ keycloak_db_vendor }}
+{% if keycloak_db_vendor == 'postgres' %}
+    host: {{ postgresql_cluster_name | default('postgresql') }}-rw.{{ postgresql_namespace | default('postgresql') }}.svc.cluster.local
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+{% endif %}
+  additionalOptions:
+    - name: health-enabled
+      value: "{{ keycloak_health_enabled | lower }}"
+    - name: metrics-enabled
+      value: "{{ keycloak_metrics_enabled | lower }}"
+    - name: hostname-strict
+      value: "false"
+{% if _platform_affinity | default({}) | length > 0 %}
+  unsupported:
+    podTemplate:
+      spec:
+        affinity:
+{{ _platform_affinity | to_nice_yaml(indent=2) | indent(10, True) }}
+{% endif %}

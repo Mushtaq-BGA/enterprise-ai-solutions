@@ -1,0 +1,31 @@
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: gateway-auth
+  namespace: {{ gateway_namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ gateway_name }}
+{% if auth_provider == 'keycloak' %}
+  jwt:
+    providers:
+      - name: keycloak
+        issuer: "https://{{ keycloak_hostname }}/realms/{{ keycloak_realm }}"
+        audiences:
+          - "{{ keycloak_client_id | default('inference-client') }}"
+        remoteJWKS:
+          uri: "http://keycloak-service.{{ keycloak_namespace | default('keycloak') }}.svc.cluster.local:8080/realms/{{ keycloak_realm }}/protocol/openid-connect/certs"
+{% elif auth_provider == 'litellm' %}
+  extAuth:
+    http:
+      backendRef:
+        name: litellm
+        namespace: litellm
+        port: 4000
+      headersToBackend:
+        - Authorization
+      path: /key/verify
+{% endif %}

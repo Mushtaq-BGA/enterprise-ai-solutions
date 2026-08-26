@@ -1,0 +1,89 @@
+name: License Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      PR_number:
+        description: 'Pull request number'
+        required: true
+  push:
+    branches:
+      - main
+      - v1.0
+      - release*
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  license-header-check:
+    name: Check file license headers
+    runs-on: [innersource.prod.amr.dind]
+    container: amr-registry.caas.intel.com/cache/library/ubuntu:latest
+    environment: d3
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install tools
+      run: |
+        apt-get update
+        apt-get install -y findutils grep
+      shell: bash
+
+    - name: Check license headers and generate report
+      id: check_licenses
+      run: |
+        # Required license header
+        EXPECTED_HEADER="# Copyright (C) 2025-2026 Intel Corporation
+        # SPDX-License-Identifier: Apache-2.0"
+        echo "# License Header Check Report" > license-report.md
+        echo "Generated on: $(date)" >> license-report.md
+        echo -e "\n## Files Missing License Headers\n" >> license-report.md
+
+        # Find all script files missing headers - excluding specific files
+        # Note: YAML/config files are excluded as they don't require license headers
+        missing_files=$(find . -type f -name "*.sh" |
+          grep -v "venv\|\.git\|\.github/workflows\|\.kubespray\|ext/" |
+          while read file; do
+            if ! head -5 "$file" | grep -q "Copyright (C) 20[0-9][0-9]-20[0-9][0-9] Intel Corporation" || \
+               ! head -5 "$file" | grep -q "SPDX-License-Identifier: Apache-2.0"; then
+              echo "$file"
+            fi
+          done || true)
+
+        # Add to report
+        if [ -z "$missing_files" ]; then
+          echo "All files have proper license headers" >> license-report.md
+          echo "ALL_HEADERS_PRESENT=true" >> $GITHUB_ENV
+        else
+          count=$(echo "$missing_files" | wc -l)
+          echo "Files missing license headers: $count" >> license-report.md
+          echo '```' >> license-report.md
+          echo "$missing_files" >> license-report.md
+          echo '```' >> license-report.md
+          echo "ALL_HEADERS_PRESENT=false" >> $GITHUB_ENV
+        fi
+
+        # Add expected header to report
+        echo -e "\n## Expected License Header\n" >> license-report.md
+        echo '```yaml' >> license-report.md
+        echo "$EXPECTED_HEADER" >> license-report.md
+        echo '```' >> license-report.md
+      shell: bash
+
+    - name: Upload license check results
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-header-check-report
+        path: license-report.md
+        retention-days: 30
+
+    - name: Fail if license headers are missing
+      if: env.ALL_HEADERS_PRESENT != 'true'
+      run: |
+        echo "::error::License check failed! Files are missing license headers."
+        echo "License check failed! See the report for details."
+        exit 1
+      shell: bash

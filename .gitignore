@@ -1,0 +1,17 @@
+.venv/
+ext/
+__pycache__/
+*.pyc
+*.retry
+*.log
+collections/ansible_collections/
+# Helm chart packages
+*.tgz
+# User-specific config (edit locally, never commit — see config/defaults/)
+global_config.yaml
+nodes.yaml
+# Repo-local runtime state (H5 — no host-side footprint)
+.kubespray/
+.logs/
+env/
+linux-amd64/

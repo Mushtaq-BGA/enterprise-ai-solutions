@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# PostgreSQL Role Defaults (CloudNativePG Operator)
+# =============================================================================
+# Shared PostgreSQL instance for platform services.
+# Deploys the CNPG operator via Helm, then a Cluster CR per instance.
+# Each consumer gets its own database + credentials.
+# =============================================================================
+
+# CNPG Operator
+cnpg_version: "0.25.0"
+cnpg_namespace: "cnpg-system"
+cnpg_helm_repo: "https://cloudnative-pg.github.io/charts"
+
+# PostgreSQL Cluster
+postgresql_namespace: "postgresql"
+postgresql_cluster_name: "postgresql"
+postgresql_instances: 1
+postgresql_version: "17"
+postgresql_image: "ghcr.io/cloudnative-pg/postgresql:{{ postgresql_version }}"
+postgresql_storage: "10Gi"
+postgresql_storage_class: ""          # empty = default StorageClass
+
+# Superuser — managed by CNPG operator (auto-generated)
+postgresql_admin_user: "postgres"
+
+# Per-consumer databases — list of {name, user, password(optional)}
+# Each entry creates a database + user in the CNPG cluster.
+# The first entry is the bootstrap "application" database.
+# Example:
+#   postgresql_databases:
+#     - name: keycloak
+#       user: keycloak
+#     - name: litellm
+#       user: litellm
+postgresql_databases: []

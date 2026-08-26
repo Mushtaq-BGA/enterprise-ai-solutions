@@ -1,0 +1,68 @@
+---
+# =============================================================================
+# Kubernetes — Post-install validation
+# =============================================================================
+
+- name: "kubernetes | post | Verify cluster connectivity"
+  ansible.builtin.command:
+    cmd: kubectl cluster-info
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+    TERM: "dumb"
+  changed_when: false
+  register: _k8s_cluster_info
+
+- name: "kubernetes | post | Display cluster info"
+  ansible.builtin.debug:
+    msg: "{{ _k8s_cluster_info.stdout_lines | map('regex_replace', '\u001b\\[[0-9;]*m', '') | list }}"
+
+- name: "kubernetes | post | Get node status"
+  ansible.builtin.command:
+    cmd: kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+  register: _k8s_node_wide
+
+- name: "kubernetes | post | Display nodes"
+  ansible.builtin.debug:
+    msg: "{{ _k8s_node_wide.stdout_lines }}"
+
+- name: "kubernetes | post | Wait for all nodes to be Ready"
+  ansible.builtin.shell:
+    cmd: |
+      kubectl get nodes --no-headers | grep -v ' Ready' | wc -l
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _k8s_not_ready_count
+  until: (_k8s_not_ready_count.stdout | trim | int) == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+# ─── Helm ─────────────────────────────────────────────────────────────────
+# helm is an operator prerequisite installed by './es_auto_installer.sh configure'
+# (into /usr/local/bin). We only verify it here — the installer never mutates
+# host tooling.
+
+- name: "kubernetes | post | Verify helm is available"
+  ansible.builtin.command:
+    cmd: helm version --short
+  changed_when: false
+  register: _helm_version
+
+- name: "kubernetes | post | Display helm version"
+  ansible.builtin.debug:
+    msg: "Helm: {{ _helm_version.stdout }}"
+
+- name: "kubernetes | post | Apply node topology (multi-node only)"
+  ansible.builtin.include_tasks: apply_node_topology.yaml
+  when: node_topology_enabled | default(false) | bool
+
+- name: "kubernetes | post | Kubernetes is ready"
+  ansible.builtin.debug:
+    msg:
+      - "Kubernetes cluster is healthy."
+      - "Version: {{ kubernetes_version }}"
+      - "Nodes: {{ _k8s_node_wide.stdout_lines | length - 1 }}"

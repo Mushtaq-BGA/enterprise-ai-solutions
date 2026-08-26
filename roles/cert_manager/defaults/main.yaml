@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# cert-manager Role Defaults
+# =============================================================================
+
+certmanager_version: "1.20.1"
+certmanager_namespace: "cert-manager"
+certmanager_helm_repo: "https://charts.jetstack.io"
+certmanager_wait_timeout: "300s"

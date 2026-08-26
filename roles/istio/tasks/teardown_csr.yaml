@@ -1,0 +1,73 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# =============================================================================
+# Istio — cert-manager-istio-csr teardown (idempotent)
+# =============================================================================
+# All tasks use failed_when: false so re-running on an already-clean cluster
+# does not error out. CRDs for cert-manager may not be present if cert-manager
+# was already removed before this runs.
+# =============================================================================
+
+- name: "istio | csr | Delete istio-system RoleBinding for istio-csr"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: cert-manager-istio-csr
+        namespace: "{{ istio_namespace }}"
+  failed_when: false
+
+- name: "istio | csr | Delete istio-system Role for istio-csr"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: cert-manager-istio-csr
+        namespace: "{{ istio_namespace }}"
+  failed_when: false
+
+- name: "istio | csr | Uninstall cert-manager-istio-csr Helm chart"
+  kubernetes.core.helm:
+    name: "{{ istio_csr_helm_release_name }}"
+    release_namespace: "{{ istio_csr_namespace }}"
+    state: absent
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
+  failed_when: false
+
+- name: "istio | csr | Delete istio-ca ClusterIssuer"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: istio-ca
+  failed_when: false
+
+- name: "istio | csr | Delete istio-ca Certificate"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ istio_csr_ca_cert_name }}"
+        namespace: "{{ istio_csr_namespace }}"
+  failed_when: false
+
+- name: "istio | csr | Delete selfsigned-root ClusterIssuer"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ istio_csr_root_issuer_name }}"
+  failed_when: false

@@ -1,0 +1,37 @@
+name: OIDC Workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: [innersource.prod.amr.dind]
+    name: OIDC
+    container:
+      image: cache-registry.caas.intel.com/cache/library/python:3.11
+    environment: d3
+
+    steps:
+
+      - uses: intel-innersource/frameworks.actions.certs@latest
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch secrets from Conjur
+        uses: intel-innersource/frameworks.actions.conjur-fetch@v1.0.0
+        with:
+          host_id: host/github-apps-oidc/45019-hostgithubappsoidc45019r
+          secrets: >
+            FMSPAMVLT101/LOBUSER_prapp/AAM-DV-45019-DCAISCAN/Operating System-WindowsDomainAccounts-amr.corp.intel.com-sys_dcai_iaas/password|RAG_COVERITY_PASSWORD;
+            FMSPAMVLT101/LOBUSER_prapp/AAM-DV-45019-DCAISCAN/Operating System-WindowsDomainAccounts-amr.corp.intel.com-sys_dcai_iaas/username|RAG_COVERITY_USER
+
+      - name: Echo secrets
+        shell: bash
+        run: |
+          echo "conjurpp_pass $RAG_COVERITY_PASSWORD"
+          echo "Username $RAG_COVERITY_USER"
+          echo $RAG_COVERITY_PASSWORD | sed 's/./& /g'

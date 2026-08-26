@@ -1,0 +1,18 @@
+---
+# Gateway-scoped default HTTP timeout.
+# Applies to every HTTPRoute that attaches to {{ gateway_name }} unless the
+# route overrides with its own spec.rules[].timeouts.request.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: gateway-default-timeout
+  namespace: {{ gateway_namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ gateway_name }}
+  timeout:
+    http:
+      requestTimeout: {{ gateway_request_timeout }}
+      connectionIdleTimeout: {{ gateway_request_timeout }}

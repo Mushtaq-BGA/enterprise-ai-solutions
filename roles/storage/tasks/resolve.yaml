@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# storage | resolve
+# =============================================================================
+# Runs once, in preflight, before the component loop. Sets facts only (no
+# cluster calls), so it is safe before the cluster exists. The `storage`
+# component gates on _resolved_storage_role, so resolution must happen here.
+#
+# Input  : storage_backend  (default local-path)
+# Outputs: _resolved_storage_backend  normalized selector
+#          _resolved_storage_role     role to run, or none (local-path)
+# =============================================================================
+
+- name: "storage | resolve | normalize selector"
+  ansible.builtin.set_fact:
+    _resolved_storage_backend: "{{ (storage_backend | default('local-path')) | string | trim | lower }}"
+
+- name: "storage | resolve | detect multi-node"
+  ansible.builtin.set_fact:
+    _storage_is_multinode: >-
+      {{ (nodes_workers | default([]) | length) > 0
+         or (groups['all'] | default([]) | length) > 1 }}
+
+- name: "storage | resolve | reject local-path on multi-node"
+  ansible.builtin.fail:
+    msg: >-
+      storage_backend='local-path' cannot run on a multi-node cluster.
+      Set storage_backend to nfs or ceph in global_config.yaml.
+  when: _resolved_storage_backend == 'local-path' and _storage_is_multinode | bool
+
+- name: "storage | resolve | look up backend in registry"
+  ansible.builtin.set_fact:
+    _resolved_storage_entry: >-
+      {{ (storage_backends | selectattr('name', 'equalto', _resolved_storage_backend) | list | first) | default(none) }}
+
+- name: "storage | resolve | reject unknown backend"
+  ansible.builtin.assert:
+    that: _resolved_storage_entry is not none
+    fail_msg: >-
+      storage_backend='{{ _resolved_storage_backend }}' is not a known backend.
+      Valid: {{ storage_backends | map(attribute='name') | join(', ') }}.
+
+- name: "storage | resolve | derive role"
+  ansible.builtin.set_fact:
+    _resolved_storage_role: "{{ _resolved_storage_entry.role }}"
+
+- name: "storage | resolve | announce"
+  ansible.builtin.debug:
+    msg: >-
+      Storage backend: {{ _resolved_storage_backend }}
+      → role={{ _resolved_storage_role | default('(none — local-path)', true) }}

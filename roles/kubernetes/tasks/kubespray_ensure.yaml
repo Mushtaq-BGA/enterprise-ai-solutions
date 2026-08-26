@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Kubespray Ensure — Clone, venv, collections
+# =============================================================================
+# Ensures kubespray is cloned and the venv is ready. Imported by both
+# install_kubespray.yaml and teardown.yaml so that teardown works even
+# when install was never run.
+# =============================================================================
+
+# ─── Clone & Pin Kubespray ───────────────────────────────────────────────────
+
+- name: "kubernetes | kubespray | Check if kubespray is already cloned"
+  ansible.builtin.stat:
+    path: "{{ kubespray_dir }}/.git"
+  register: _kubespray_exists
+
+- name: "kubernetes | kubespray | Clone kubespray repository"
+  ansible.builtin.git:
+    repo: "{{ kubespray_repo }}"
+    dest: "{{ kubespray_dir }}"
+    version: "{{ kubespray_version }}"
+    depth: 1
+    force: true
+  when: not _kubespray_exists.stat.exists
+
+- name: "kubernetes | kubespray | Ensure pinned version"
+  ansible.builtin.git:
+    repo: "{{ kubespray_repo }}"
+    dest: "{{ kubespray_dir }}"
+    version: "{{ kubespray_version }}"
+    force: true
+  when: _kubespray_exists.stat.exists
+
+# ─── Python Virtual Environment ─────────────────────────────────────────────
+
+- name: "kubernetes | kubespray | Create python venv"
+  ansible.builtin.command:
+    cmd: "python3 -m venv {{ kubespray_dir }}/venv"
+    creates: "{{ kubespray_dir }}/venv/bin/activate"
+
+- name: "kubernetes | kubespray | Install kubespray requirements"
+  ansible.builtin.pip:
+    requirements: "{{ kubespray_dir }}/requirements.txt"
+    virtualenv: "{{ kubespray_dir }}/venv"
+    state: present

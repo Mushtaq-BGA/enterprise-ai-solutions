@@ -1,0 +1,76 @@
+---
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: {{ rook_ceph_operator_namespace }}
+spec:
+  cephVersion:
+    image: {{ rook_ceph_image }}
+    allowUnsupported: false
+  dataDirHostPath: /var/lib/rook
+{# Sized off storage nodes, not cluster nodes — placement.all confines every
+   daemon to them, so a 2-storage-node tier must co-locate mons to reach quorum. #}
+  mon:
+    count: 3
+{% if (_rook_storage_node_count | int) < 3 %}
+    allowMultiplePerNode: true
+{% else %}
+    allowMultiplePerNode: false
+{% endif %}
+  mgr:
+{% if (_rook_storage_node_count | int) >= 3 %}
+    count: 2
+{% else %}
+    count: 1
+{% endif %}
+    modules:
+      - name: rook
+        enabled: true
+      - name: pg_autoscaler
+        enabled: true
+  dashboard:
+    enabled: {{ rook_ceph_dashboard_enabled | lower }}
+{% if rook_ceph_dashboard_enabled %}
+    ssl: true
+{% endif %}
+  storage:
+    useAllNodes: false
+    useAllDevices: false
+    nodes:
+{% for node_name, devices in rook_ceph_devices.items() %}
+      - name: "{{ node_name }}"
+        devices:
+{% for dev in devices %}
+          - name: "{{ dev | regex_replace('^/dev/', '') }}"
+{% endfor %}
+{% endfor %}
+  resources:
+    osd:
+      limits:
+        memory: "{{ rook_ceph_osd_memory_limit }}"
+      requests:
+        memory: "{{ rook_ceph_osd_memory_request }}"
+        cpu: "{{ rook_ceph_osd_cpu_request }}"
+    mon:
+      limits:
+        memory: "{{ rook_ceph_mon_memory_limit }}"
+      requests:
+        memory: "{{ rook_ceph_mon_memory_request }}"
+    mgr:
+      limits:
+        memory: "{{ rook_ceph_mgr_memory_limit }}"
+      requests:
+        memory: "{{ rook_ceph_mgr_memory_request }}"
+  placement:
+    all:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: {{ rook_ceph_storage_node_label_key }}
+                  operator: In
+                  values:
+                    - {{ rook_ceph_storage_node_label_value }}
+      tolerations:
+        - operator: Exists

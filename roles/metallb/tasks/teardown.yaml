@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# MetalLB — Teardown
+# =============================================================================
+
+- name: "metallb | Cloud environment — skipping MetalLB teardown"
+  ansible.builtin.debug:
+    msg: "load_balancer_type is '{{ load_balancer_type }}' — skipping MetalLB teardown"
+  when: load_balancer_type == 'cloud'
+
+- name: "metallb | Check if Helm release exists"
+  kubernetes.core.helm_info:
+    name: metallb
+    release_namespace: "{{ metallb_namespace }}"
+  register: _metallb_release
+  failed_when: false
+  when: load_balancer_type != 'cloud'
+
+- name: "metallb | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "MetalLB Helm release not found in {{ metallb_namespace }}. Nothing to tear down."
+  when: load_balancer_type != 'cloud' and (_metallb_release.status is not defined)
+
+- name: "metallb | Teardown MetalLB"
+  when: load_balancer_type != 'cloud' and (_metallb_release.status is defined)
+  block:
+    - name: "metallb | Delete L2Advertisement"
+      kubernetes.core.k8s:
+        api_version: metallb.io/v1beta1
+        kind: L2Advertisement
+        name: "{{ metallb_pool_name }}-l2"
+        namespace: "{{ metallb_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "metallb | Delete IPAddressPool"
+      kubernetes.core.k8s:
+        api_version: metallb.io/v1beta1
+        kind: IPAddressPool
+        name: "{{ metallb_pool_name }}"
+        namespace: "{{ metallb_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "metallb | Uninstall Helm release"
+      kubernetes.core.helm:
+        name: metallb
+        release_namespace: "{{ metallb_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+
+    - name: "metallb | Find MetalLB CRDs"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+      register: _metallb_crds
+
+    - name: "metallb | Delete MetalLB CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item.metadata.name }}"
+        state: absent
+      loop: "{{ _metallb_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*metallb\\.io') | list }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    - name: "metallb | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ metallb_namespace }}"
+        state: absent
+      failed_when: false

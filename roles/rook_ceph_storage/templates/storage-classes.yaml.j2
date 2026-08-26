@@ -1,0 +1,46 @@
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ rook_ceph_rbd_storage_class }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "{{ (rook_ceph_default_storage_class == rook_ceph_rbd_storage_class) | lower }}"
+provisioner: {{ rook_ceph_operator_namespace }}.rbd.csi.ceph.com
+parameters:
+  clusterID: {{ rook_ceph_operator_namespace }}
+  pool: {{ rook_ceph_block_pool_name }}
+  imageFormat: "2"
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: {{ rook_ceph_operator_namespace }}
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: {{ rook_ceph_operator_namespace }}
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+  csi.storage.k8s.io/node-stage-secret-namespace: {{ rook_ceph_operator_namespace }}
+  csi.storage.k8s.io/fstype: ext4
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+{% if rook_ceph_fs_enabled %}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ rook_ceph_fs_storage_class }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "{{ (rook_ceph_default_storage_class == rook_ceph_fs_storage_class) | lower }}"
+provisioner: {{ rook_ceph_operator_namespace }}.cephfs.csi.ceph.com
+parameters:
+  clusterID: {{ rook_ceph_operator_namespace }}
+  fsName: {{ rook_ceph_filesystem_name }}
+  pool: {{ rook_ceph_filesystem_name }}-data0
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: {{ rook_ceph_operator_namespace }}
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: {{ rook_ceph_operator_namespace }}
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: {{ rook_ceph_operator_namespace }}
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+{% endif %}

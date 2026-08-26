@@ -1,0 +1,63 @@
+---
+# =============================================================================
+# Istio — Teardown
+# =============================================================================
+
+- name: "istio | Teardown cert-manager-istio-csr (CA bridge)"
+  ansible.builtin.include_tasks: teardown_csr.yaml
+  when: istio_enabled | default(true) | bool
+
+- name: "istio | Check if Helm release exists"
+  kubernetes.core.helm_info:
+    name: "{{ istio_helm_release_name }}"
+    release_namespace: "{{ istio_namespace }}"
+  register: _istio_release
+  failed_when: false
+
+- name: "istio | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "Istio Helm release not found. Nothing to tear down."
+  when: _istio_release.status is not defined
+
+- name: "istio | Teardown"
+  when: _istio_release.status is defined
+  block:
+
+    - name: "istio | Uninstall Helm chart"
+      kubernetes.core.helm:
+        name: "{{ istio_helm_release_name }}"
+        release_namespace: "{{ istio_namespace }}"
+        state: absent
+        purge: true
+        wait: "{{ helm_wait }}"
+        timeout: "{{ istio_wait_timeout }}"
+      failed_when: false
+
+    - name: "istio | Delete namespace"
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ istio_namespace }}"
+      failed_when: false
+
+    - name: "istio | Get CRDs"
+      kubernetes.core.k8s_info:
+        kind: CustomResourceDefinition
+      register: _istio_crds
+
+    - name: "istio | Remove Istio CRDs"
+      kubernetes.core.k8s:
+        state: absent
+        definition: "{{ item }}"
+      loop: "{{ _istio_crds.resources | selectattr('metadata.name', 'search', 'istio.io') | list }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when: _istio_crds.resources | length > 0
+      failed_when: false
+
+    - name: "istio | Teardown complete"
+      ansible.builtin.debug:
+        msg: "Istio uninstalled from {{ istio_namespace }}."
