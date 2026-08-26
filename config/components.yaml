@@ -31,7 +31,7 @@ layers:
     enabled: true
     depends_on: [platform]
   - name: application
-    enabled: false                  # opt-in via ext (e.g. enterprise.ai-erag)
+    enabled: false                  # opt-in via an ext solution repo
     depends_on: [platform,inference]
   # Future layers — just add here:
 
