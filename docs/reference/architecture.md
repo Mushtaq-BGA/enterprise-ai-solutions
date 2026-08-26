@@ -287,7 +287,7 @@ External repos are declared in [`config/repos.yaml`](../../config/repos.yaml) an
 
 ```yaml
 repos:
-  - url: "https://github.com/intel-innersource/applications.ai.enterprise.ai-inference"
+  - url: "https://github.com/Mushtaq-BGA/enterprise-inference"
     dest: "enterprise.ai-inference"
     deployment_subdir: ""          # roles/, components.yaml, config.yaml at repo root
   - url: "https://github.com/intel-innersource/applications.ai.enterprise.ai-erag"

@@ -62,7 +62,7 @@ already present). You can install them manually instead:
 ## Step 1: Get the Code and Configure
 
 ```bash
-git clone https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions.git
+git clone https://github.com/Mushtaq-BGA/enterprise-ai-solutions.git
 cd applications.ai.enterprise.ai-solutions
 
 # Configure your machine (installs Python 3.11+, yq, kubectl, helm, sets up venv)
@@ -343,7 +343,7 @@ This is the same as Option B, except you run the installer on the bastion (gatew
 
 ```bash
 # Get the code
-git clone https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions.git
+git clone https://github.com/Mushtaq-BGA/enterprise-ai-solutions.git
 cd applications.ai.enterprise.ai-solutions
 
 # Configure machine and create environment

@@ -665,7 +665,7 @@ These are the rare cases:
 | See where the gateway and auth boundary you just integrated with fit in the full stack | [Architecture & Design Document](../reference/architecture.md) |
 | Trace exactly how a request flows through MetalLB, the gateway, and ingress | [Network Architecture](../deploy/networking.md) |
 | Deploy, list, or undeploy the model you're pointing your app at | [Deploy an LLM](../deploy/deploy_models.md) |
-| Dig into the underlying inference-serving repo (`model-manager`, vLLM/OVMS configs) | [Model Manager (Enterprise Inference) on GitHub](https://github.com/intel-innersource/applications.ai.enterprise.ai-inference) |
+| Dig into the underlying inference-serving repo (`model-manager`, vLLM/OVMS configs) | [Model Manager (Enterprise Inference) on GitHub](https://github.com/Mushtaq-BGA/enterprise-inference) |
 
 Config file references for the auth flow above:
 - Envoy Gateway `SecurityPolicy`: `roles/envoy_gateway/templates/security-policy.yaml.j2`
