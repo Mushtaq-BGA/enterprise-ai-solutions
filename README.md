@@ -38,7 +38,7 @@ The stack installs in three ordered layers, from the base up:
 **Request flow:** a request enters through the Envoy AI Gateway, is authenticated against Keycloak (or a LiteLLM virtual key), and is routed to the matching model-serving backend. Every layer's health and latency is visible in the built-in Grafana / Prometheus / Loki / Tempo stack.
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="Intel Enterprise for AI Solutions layer diagram: infrastructure layer (Kubernetes, storage) at the base; platform layer (Istio, Envoy Gateway, PostgreSQL, Keycloak, MinIO, observability) above it; inference layer (Envoy AI Gateway, KServe, vLLM and OpenVINO Model Server) above that; and an opt-in application layer (RAG pipelines, UI, vector databases) on top, with client requests flowing through the gateway to the serving layer" />
+  <img src="https://raw.githubusercontent.com/Mushtaq-BGA/enterprise-ai-solutions/main/docs/assets/architecture.png" alt="Intel Enterprise for AI Solutions layer diagram: infrastructure layer (Kubernetes, storage) at the base; platform layer (Istio, Envoy Gateway, PostgreSQL, Keycloak, MinIO, observability) above it; inference layer (Envoy AI Gateway, KServe, vLLM and OpenVINO Model Server) above that; and an opt-in application layer (RAG pipelines, UI, vector databases) on top, with client requests flowing through the gateway to the serving layer" />
 </p>
 
 > See the [Architecture deep-dive](docs/reference/architecture.md) for the full component list, execution flow, and cross-repo layering.
@@ -153,7 +153,7 @@ Live metrics are available in Grafana at `https://grafana.<your-domain>` — the
 
 | Keycloak — Identity & Access Management | Grafana — Inference Monitoring |
 |:---:|:---:|
-| ![Keycloak login screen for Intel Enterprise for AI Solutions, showing OIDC-based sign-in used for identity and access management](docs/assets/screenshots/keycloak-auth.png) | ![Grafana dashboard for Intel Enterprise for AI Solutions showing vLLM inference metrics: request rate, latency, time-to-first-token, and token throughput](docs/assets/screenshots/grafana-dashboard.png) |
+| ![Keycloak login screen for Intel Enterprise for AI Solutions, showing OIDC-based sign-in used for identity and access management](https://raw.githubusercontent.com/Mushtaq-BGA/enterprise-ai-solutions/main/docs/assets/screenshots/keycloak-auth.png) | ![Grafana dashboard for Intel Enterprise for AI Solutions showing vLLM inference metrics: request rate, latency, time-to-first-token, and token throughput](https://raw.githubusercontent.com/Mushtaq-BGA/enterprise-ai-solutions/main/docs/assets/screenshots/grafana-dashboard.png) |
 
 ---
 
