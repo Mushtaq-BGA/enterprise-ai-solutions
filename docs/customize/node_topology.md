@@ -84,8 +84,8 @@ nodeAffinity:
 - cert-manager (controller + webhook + cainjector) ([`roles/cert_manager/tasks/install.yaml`](../../roles/cert_manager/tasks/install.yaml))
 - MetalLB controller ([`roles/metallb/tasks/install.yaml`](../../roles/metallb/tasks/install.yaml))
 - Envoy Gateway **controller + data plane** ([`roles/envoy_gateway/tasks/install.yaml`](../../roles/envoy_gateway/tasks/install.yaml))
-- Envoy AI Gateway **controller + data plane** ([`ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml`](https://github.com/Mushtaq-BGA/enterprise-inference/blob/main/roles/envoy_ai_gateway/tasks/install.yaml))
-- KServe controller ([`ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml`](https://github.com/Mushtaq-BGA/enterprise-inference/blob/main/roles/kserve/tasks/install.yaml))
+- Envoy AI Gateway **controller + data plane** ([`ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml`](https://github.com/intel/enterprise-inference/blob/main/roles/envoy_ai_gateway/tasks/install.yaml))
+- KServe controller ([`ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml`](https://github.com/intel/enterprise-inference/blob/main/roles/kserve/tasks/install.yaml))
 
 > **Envoy data-plane pinning**: The actual Envoy proxy pods (which handle external
 > HTTPS traffic, not just the controller) are pinned via an `EnvoyProxy` CRD
@@ -113,8 +113,8 @@ affinity:
 ```
 
 **Affected templates** (static YAML — processed by model_manager at runtime, not Ansible):
-- LLMInferenceService ([`ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml`](https://github.com/Mushtaq-BGA/enterprise-inference/blob/main/model_manager/templates/llm-inference-service.yaml))
-- InferenceService ([`ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml`](https://github.com/Mushtaq-BGA/enterprise-inference/blob/main/model_manager/templates/inference-service.yaml))
+- LLMInferenceService ([`ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/llm-inference-service.yaml))
+- InferenceService ([`ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/inference-service.yaml))
 
 ## Benefits
 

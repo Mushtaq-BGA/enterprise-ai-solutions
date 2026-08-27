@@ -61,7 +61,7 @@ All stack configuration options reside in `env/<name>/global_config.yaml` (creat
 For a full list of configurable options, see [Configuration Reference](docs/customize/configuration.md). For detailed installation steps (multi-node, bastion, BYO cluster) and the alternative `litellm` virtual-key auth mode, see [Deployment Guide](docs/deploy/install_platform.md).
 
 ```bash
-git clone https://github.com/Mushtaq-BGA/enterprise-ai-solutions.git
+git clone https://github.com/intel/enterprise-ai-solutions.git
 cd applications.ai.enterprise.ai-solutions
 
 ./es_auto_installer.sh configure          # one-time machine prep (installs Python 3.11+, yq, kubectl, helm)
@@ -182,8 +182,8 @@ Licensed under the [Apache License, Version 2.0](LICENSE).
 ## Links
 
 - [Documentation Index](docs/README.md)
-- [GitHub Repository](https://github.com/Mushtaq-BGA/enterprise-ai-solutions)
-- [Intel® Enterprise for AI Inference (inference layer)](https://github.com/Mushtaq-BGA/enterprise-inference)
+- [GitHub Repository](https://github.com/intel/enterprise-ai-solutions)
+- [Intel® Enterprise for AI Inference (inference layer)](https://github.com/intel/enterprise-inference)
 - [Meet AI Solutions](docs/meet/meet.md)
 - [Architecture](docs/reference/architecture.md)
 
