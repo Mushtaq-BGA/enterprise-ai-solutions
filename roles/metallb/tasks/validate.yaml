@@ -1,0 +1,58 @@
+---
+# =============================================================================
+# MetalLB — Validate
+# =============================================================================
+
+- name: "metallb | Cloud environment — skipping MetalLB validation"
+  ansible.builtin.debug:
+    msg: "load_balancer_type is '{{ load_balancer_type }}' — skipping MetalLB validation"
+  when: load_balancer_type == 'cloud'
+
+- name: "metallb | Validate MetalLB"
+  when: load_balancer_type != 'cloud'
+  block:
+    - name: "metallb | Check Helm release"
+      kubernetes.core.helm_info:
+        name: metallb
+        release_namespace: "{{ metallb_namespace }}"
+      register: _mlb_release
+
+    - name: "metallb | Assert MetalLB is installed"
+      ansible.builtin.assert:
+        that: _mlb_release.status is defined
+        fail_msg: "MetalLB is not installed in namespace {{ metallb_namespace }}"
+        success_msg: "MetalLB Helm release found"
+
+    - name: "metallb | Check controller deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: metallb-controller
+        namespace: "{{ metallb_namespace }}"
+      register: _mlb_ctrl
+
+    - name: "metallb | Assert controller has ready replicas"
+      ansible.builtin.assert:
+        that:
+          - _mlb_ctrl.resources | length > 0
+          - (_mlb_ctrl.resources[0].status.readyReplicas | default(0) | int) >= 1
+        fail_msg: "metallb-controller has no ready replicas"
+        success_msg: "metallb-controller ready ({{ _mlb_ctrl.resources[0].status.readyReplicas | default(0) }} replicas)"
+
+    - name: "metallb | Check IPAddressPool exists"
+      kubernetes.core.k8s_info:
+        api_version: metallb.io/v1beta1
+        kind: IPAddressPool
+        name: "{{ metallb_pool_name }}"
+        namespace: "{{ metallb_namespace }}"
+      register: _mlb_pool
+
+    - name: "metallb | Assert IPAddressPool exists"
+      ansible.builtin.assert:
+        that: _mlb_pool.resources | length > 0
+        fail_msg: "IPAddressPool '{{ metallb_pool_name }}' not found"
+        success_msg: "IPAddressPool '{{ metallb_pool_name }}' exists"
+
+    - name: "metallb | Validation passed"
+      ansible.builtin.debug:
+        msg: "MetalLB validation passed."

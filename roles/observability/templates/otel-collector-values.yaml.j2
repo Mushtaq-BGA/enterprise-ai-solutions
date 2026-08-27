@@ -1,0 +1,200 @@
+# =============================================================================
+# OpenTelemetry Collector — Helm values (DaemonSet mode)
+#
+# Runs on every node and does two things:
+#   1. Tails pod logs from /var/log/pods and forwards to Loki
+#   2. Receives OTLP traces (gRPC :4317, HTTP :4318) and forwards to Tempo
+#
+# All services in all namespaces can push traces/logs to this collector at:
+#   OTLP gRPC: {{ observability_otel_grpc_endpoint }}
+#   OTLP HTTP: {{ observability_otel_http_endpoint }}
+# =============================================================================
+
+mode: daemonset
+
+# In DaemonSet mode the chart does not create a ClusterIP Service by default.
+# Explicitly enable it so instrumented pods (e.g. vLLM) can push OTLP traces
+# via a stable DNS name: opentelemetry-collector.<namespace>.svc.cluster.local
+service:
+  enabled: true
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.152.0"
+
+affinity: {{ _platform_affinity | default({}) | to_json }}
+
+# Expose OTLP receiver ports on the DaemonSet so pods can push to the node-local collector.
+ports:
+  otlp:
+    enabled: true
+    containerPort: {{ observability_otel_grpc_port }}
+    servicePort: {{ observability_otel_grpc_port }}
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: {{ observability_otel_http_port }}
+    servicePort: {{ observability_otel_http_port }}
+    protocol: TCP
+  # Port 8889 — avoids conflict with node-exporter on :8888
+  metrics:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+
+# RBAC — needs read access to pod metadata for k8sattributes enrichment
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["nodes", "pods", "namespaces", "endpoints"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["replicasets"]
+      verbs: ["get", "list", "watch"]
+
+# NODE_NAME is required by the k8snode resourcedetection processor
+extraEnvs:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  - name: K8S_NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+
+# Mount host log directories for pod log collection
+extraVolumes:
+  - name: varlogpods
+    hostPath:
+      path: /var/log/pods
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+
+extraVolumeMounts:
+  - name: varlogpods
+    mountPath: /var/log/pods
+    readOnly: true
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+
+config:
+  # ── Receivers ───────────────────────────────────────────────────────────────
+  receivers:
+    # OTLP — instrumented services push traces and logs here
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:{{ observability_otel_grpc_port }}"
+        http:
+          endpoint: "0.0.0.0:{{ observability_otel_http_port }}"
+
+    # filelog — collect stdout/stderr from every pod on this node
+    filelog:
+      include:
+        - /var/log/pods/*/*/*.log
+      exclude:
+        # Don't tail the collector's own logs (avoid loop)
+        - /var/log/pods/{{ observability_namespace }}_opentelemetry-collector*/*/*.log
+      start_at: beginning
+      include_file_path: true
+      include_file_name: false
+      operators:
+        # Parse CRI log format (containerd/CRI-O)
+        - type: container
+          id: container-parser
+      resource:
+        k8s.cluster.name: "{{ kubernetes_cluster_name | default('inference-cluster') }}"
+
+  # ── Processors ──────────────────────────────────────────────────────────────
+  processors:
+    batch:
+      send_batch_size: 1000
+      timeout: 5s
+
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+
+    # Enriches every signal with pod/namespace/deployment metadata
+    k8sattributes:
+      auth_type: serviceAccount
+      passthrough: false
+      extract:
+        metadata:
+          - k8s.namespace.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.node.name
+          - k8s.deployment.name
+          - k8s.statefulset.name
+          - k8s.daemonset.name
+          - k8s.container.name
+          - container.image.name
+          - container.image.tag
+      pod_association:
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.uid
+        - sources:
+            - from: connection
+
+    # Adds node/OS metadata to all signals
+    resourcedetection:
+      detectors: [env, system, k8snode]
+      timeout: 5s
+      override: false
+
+  # ── Exporters ───────────────────────────────────────────────────────────────
+  exporters:
+    # Loki — receives logs via OTLP HTTP (native loki exporter removed in otelcol-contrib 0.121+)
+    otlphttp/loki:
+      endpoint: "{{ observability_loki_url }}/otlp"
+      tls:
+        insecure: true
+
+    # Tempo — receives traces via OTLP gRPC
+    otlp/tempo:
+      endpoint: "{{ observability_tempo_otlp_url }}"
+      tls:
+        insecure: true
+
+    debug:
+      verbosity: basic
+
+  # ── Service (telemetry + pipelines merged under one key) ────────────────────
+  service:
+    # Internal metrics on 8889 — avoids conflict with node-exporter on :8888
+    telemetry:
+      metrics:
+        readers:
+          - pull:
+              exporter:
+                prometheus:
+                  host: "0.0.0.0"
+                  port: 8889
+    pipelines:
+      # Logs: filelog + OTLP logs → Loki
+      logs:
+        receivers: [filelog, otlp]
+        processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+        exporters: [otlphttp/loki]
+
+      # Traces: OTLP traces → Tempo
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+        exporters: [otlp/tempo]
+
+serviceMonitor:
+  enabled: true
+  namespace: "{{ observability_namespace }}"
+  interval: 30s

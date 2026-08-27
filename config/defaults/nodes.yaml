@@ -1,0 +1,120 @@
+---
+# =============================================================================
+# Node / Deployment Target Configuration
+# =============================================================================
+# Deployment modes:
+#
+#   Localhost (default):    Leave everything commented out below.
+#                           Installs K8s on this machine (single-node PoC).
+#
+#   Remote nodes:           Define nodes_control_plane (and optionally
+#                           nodes_workers) below — hosts.yaml is auto-generated.
+#
+#   Manual inventory:       Edit env/<name>/inventory/hosts.yaml directly
+#                           in kubespray format. Leave nodes_control_plane empty.
+#
+#   BYO cluster:            Set existing_kubernetes: /path/to/kubeconfig
+#                           in global_config.yaml. Skips provisioning entirely.
+# =============================================================================
+
+
+# ────────────────────── Node Definitions (Option 1) ──────────────────────────
+# Define control-plane and worker nodes here. The installer will auto-generate
+# a kubespray-compatible inventory (env/<name>/inventory/hosts.yaml).
+#
+# If nodes_control_plane is empty/commented, the installer uses the existing
+# hosts.yaml as-is (backwards compatible with manual editing).
+#
+# Supported modes:
+#   - Single remote node: define only nodes_control_plane (omit nodes_workers)
+#     → the control-plane node also serves as the worker
+#   - Multi-node cluster: define both nodes_control_plane and nodes_workers
+#     → dedicated control-plane and worker roles
+#
+# Each node requires:
+#   ip:       Node IP address (reachable from the installer host)
+#   hostname: Short name for the node (used in kubespray inventory)
+#
+# Optional per-node overrides:
+#   ssh_user: Override the global nodes_ssh_user for this node
+#   ssh_key:  Override the global nodes_ssh_key for this node
+
+# --- Single remote node example ---
+# nodes_control_plane:
+#   - ip: 10.0.0.10
+#     hostname: server1
+
+# --- Multi-node cluster example ---
+# nodes_control_plane:
+#   - ip: 10.0.0.10
+#     hostname: cp1
+#   - ip: 10.0.0.11
+#     hostname: cp2
+#
+# nodes_workers:
+#   - ip: 10.0.0.20
+#     hostname: worker1
+#   - ip: 10.0.0.21
+#     hostname: worker2
+#   - ip: 10.0.0.22
+#     hostname: worker3
+
+# ────────────────────── SSH credentials ──────────────────────────────────────
+# Global SSH settings applied to all nodes (can be overridden per-node above).
+
+# nodes_ssh_user: "deploy"
+# nodes_ssh_key: "~/.ssh/id_rsa"
+
+
+# ────────────────────── Custom inventory (Option 2) ──────────────────────────
+# Path to a kubespray-compatible inventory file for multi-node deployments.
+# For remote/multi-node setups: write your inventory in
+# env/<name>/inventory/hosts.yaml (kubespray format) and leave this unset,
+# OR point to an external file here.
+
+# kubespray_custom_inventory: ""
+
+
+# ────────────────────── Legacy SSH credentials (custom_inventory mode) ───────
+# Used by kubespray and the installer's SSH preflight check.
+# Prefer nodes_ssh_user/nodes_ssh_key above for new deployments.
+
+# kubernetes_ssh_user: ""
+# kubernetes_ssh_key: ""
+# kubernetes_jump_host: ""
+# kubernetes_jump_port: 22
+
+
+# ────────────────────── Storage and Node IPs ─────────────────────────────
+# =============================================================================
+# Infrastructure Settings (tied to node IPs)
+# =============================================================================
+
+# --- MetalLB ---
+# Leave COMMENTED OUT for intelligent auto-detection (recommended).
+# (Setting metallb_ip_range: "" here makes it an extra-var with highest
+#  precedence, which blocks auto-detection inside the role.)
+#
+# Auto-detect picks a safe pool based on kube-proxy mode:
+#   nftables/iptables (default): single- or multi-node → master IP/32
+#   ipvs (legacy): single-node → node IP/32; multi-node → .240-.250 range
+#
+# Override only when you need a specific pool:
+#     metallb_ip_range: "10.1.2.1-10.1.2.14"      # dedicated VIP subnet
+#     metallb_ip_range: "203.0.113.50/32"         # public IP on interface
+#     metallb_ip_range: "10.1.1.200-10.1.1.210"   # custom routable range
+#
+# metallb_ip_range: ""
+
+# --- NFS Storage (optional - only needed for custom NFS server or static PVs) ---
+# Auto-detected from cluster master if not set.
+# With nfs-client StorageClass (dynamic provisioning), these settings are NOT needed.
+# Uncomment only if:
+#   - Using a different NFS server than the cluster master
+#   - Using static NFS PVs instead of dynamic provisioning
+#   - Need custom NFS export path
+#
+# nfs_server: ""                                         # IP of node hosting NFS server (auto-detected if not set)
+# nfs_path: "/data/nfs"                                  # NFS export path (default: /data/nfs)
+# nfs_ssh_user: ""                                       # SSH user for NFS server bootstrap
+# nfs_ssh_key: ""                                        # SSH key for NFS server access

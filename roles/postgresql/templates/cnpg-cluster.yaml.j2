@@ -1,0 +1,35 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ postgresql_cluster_name }}
+  namespace: {{ postgresql_namespace }}
+spec:
+  instances: {{ postgresql_instances }}
+  imageName: {{ postgresql_image }}
+
+  bootstrap:
+    initdb:
+      database: {{ postgresql_databases[0].name | default('app') }}
+      owner: {{ postgresql_databases[0].user | default('app') }}
+      secret:
+        name: postgresql-{{ postgresql_databases[0].name | default('app') }}-secret
+{% if postgresql_databases | default([]) | length > 1 %}
+      postInitSQLRefs:
+        secretRefs:
+{% for db in (postgresql_databases | default([]))[1:] %}
+          - name: postgresql-init-{{ db.name }}
+            key: init.sql
+{% endfor %}
+{% endif %}
+
+  storage:
+    size: {{ postgresql_storage }}
+{% if postgresql_storage_class | default('') | length > 0 %}
+    storageClass: {{ postgresql_storage_class }}
+{% endif %}
+
+{% if _platform_affinity | default({}) | length > 0 %}
+  affinity:
+{{ _platform_affinity | to_nice_yaml(indent=2) | indent(4, True) }}
+{% endif %}

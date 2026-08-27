@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# Object Store — Public Interface
+# =============================================================================
+# This is the ONLY set of variables that consumer roles (Loki, Tempo, …)
+# should reference. They are backend-agnostic — set at runtime by whichever
+# backend role is active (minio, rustfs, seaweedfs, …).
+#
+# To migrate to a new backend:
+#   1. Set object_store_backend: <new> in global_config.yaml
+#   2. Add a role roles/<new>/ that sets these vars in its install.yaml
+#   3. Add the role to components.yaml with the right enabled condition
+#   Zero changes required in consumer roles.
+#
+# Backends set these via ansible.builtin.set_fact (not defaults), so they
+# always win over these placeholder values.
+# =============================================================================
+
+# ── Backend selector (set in global_config.yaml) ──────────────────────────────
+object_store_backend: "minio"       # minio | rustfs | seaweedfs | external
+
+# ── Endpoint (set by the active backend role) ─────────────────────────────────
+object_store_endpoint: ""           # e.g. http://minio.minio.svc.cluster.local:9000
+
+# ── Per-consumer credentials ──────────────────────────────────────────────────
+# Consumer roles define the passwords in their own defaults.
+# The active backend role promotes them to object_store_* here.
+
+# Loki (log chunks + ruler)
+object_store_loki_access_key: "loki"
+object_store_loki_secret_key: ""
+object_store_loki_buckets:
+  - loki-chunks
+  - loki-ruler
+
+# Tempo (trace chunks)
+object_store_tempo_access_key: "tempo"
+object_store_tempo_secret_key: ""
+object_store_tempo_buckets:
+  - tempo-traces
+
+# =============================================================================
+# Consumer registry — read by the active backend to create users + buckets.
+# Add a new consumer by appending an entry here. No changes to the backend
+# role required — it iterates this list generically.
+# =============================================================================
+object_store_consumers:
+  - name: loki
+    access_key: "{{ object_store_loki_access_key }}"
+    secret_key: "{{ object_store_loki_secret_key }}"
+    buckets: "{{ object_store_loki_buckets }}"
+
+  - name: tempo
+    access_key: "{{ object_store_tempo_access_key }}"
+    secret_key: "{{ object_store_tempo_secret_key }}"
+    buckets: "{{ object_store_tempo_buckets }}"

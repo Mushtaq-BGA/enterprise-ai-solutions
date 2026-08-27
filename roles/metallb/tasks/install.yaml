@@ -1,0 +1,328 @@
+---
+# =============================================================================
+# MetalLB — Install via Helm (bare-metal only)
+# =============================================================================
+
+- name: "metallb | Cloud environment — skipping MetalLB"
+  ansible.builtin.debug:
+    msg: "load_balancer_type is '{{ load_balancer_type }}' — skipping MetalLB install (cloud LB handles it)"
+  when: load_balancer_type == 'cloud'
+
+- name: "metallb | Install MetalLB"
+  when: load_balancer_type != 'cloud'
+  block:
+    # ── Check for existing LoadBalancer controller ────────────────────────
+
+    - name: "metallb | Check for existing MetalLB"
+      kubernetes.core.helm_info:
+        name: metallb
+        release_namespace: "{{ metallb_namespace }}"
+      register: _metallb_existing
+      failed_when: false
+
+    - name: "metallb | Check for known LB controllers"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ item.ns }}"
+        label_selectors: "{{ item.labels }}"
+      loop:
+        - { ns: "metallb-system", labels: ["app.kubernetes.io/name=metallb"], name: "MetalLB" }
+        - { ns: "kube-system", labels: ["app.kubernetes.io/name=kube-vip"], name: "kube-vip" }
+      loop_control:
+        label: "{{ item.name }}"
+      register: _lb_checks
+      failed_when: false
+
+    - name: "metallb | Detect existing LB"
+      ansible.builtin.set_fact:
+        _existing_lb: >-
+          {%- for result in _lb_checks.results -%}
+            {%- if result.resources | default([]) | length > 0 -%}
+              {{ result.item.name }}
+            {%- endif -%}
+          {%- endfor -%}
+
+    - name: "metallb | Validate existing LB is functional"
+      when: (_existing_lb | default('', true) | trim | length > 0) and _metallb_existing.status is not defined
+      block:
+        - name: "metallb | Existing LB controller detected: {{ _existing_lb | default('', true) | trim }}"
+          ansible.builtin.debug:
+            msg: "Skipping MetalLB install — validating existing controller can serve LoadBalancer IPs..."
+
+        - name: "metallb | Check for MetalLB IPAddressPool"
+          kubernetes.core.k8s_info:
+            api_version: metallb.io/v1beta1
+            kind: IPAddressPool
+            namespace: metallb-system
+          register: _metallb_pools
+          failed_when: false
+          when: "'MetalLB' in (_existing_lb | default('', true))"
+
+        - name: "metallb | Check existing LoadBalancer Services for external IPs"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Service
+            field_selectors:
+              - spec.type=LoadBalancer
+          register: _lb_services
+          failed_when: false
+
+        - name: "metallb | Determine LB health"
+          ansible.builtin.set_fact:
+            _lb_functional: >-
+              {%- set ns = namespace | default('', true) -%}
+              {%- if 'MetalLB' in (_existing_lb | default('', true)) -%}
+                {%- if (_metallb_pools.resources | default([]) | length) > 0 -%}true{%- else -%}false{%- endif -%}
+              {%- elif (_lb_services.resources | default([]) | length) > 0 -%}
+                {%- set assigned = [] -%}
+                {%- for svc in _lb_services.resources -%}
+                  {%- if svc.status.loadBalancer.ingress | default([]) | length > 0 -%}
+                    {%- if assigned.append(1) -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if assigned | length > 0 -%}true{%- else -%}false{%- endif -%}
+              {%- else -%}
+                true
+              {%- endif -%}
+
+        - name: "metallb | WARNING — existing LB may not be functional"
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: {{ _existing_lb | default('', true) | trim }} detected but may not be fully operational.
+              {{ 'No IPAddressPool found in metallb-system.' if 'MetalLB' in (_existing_lb | default('', true)) else 'No LoadBalancer Services have external IPs assigned.' }}
+              Envoy Gateway requires a working LB controller to assign external IPs.
+              If the gateway remains in Pending state, remove the existing controller and re-run this installer.
+          when: _lb_functional | trim != 'true'
+
+        - name: "metallb | Existing LB validated"
+          vars:
+            _detail: "{{ _existing_lb | default('', true) | trim }}{{ ' (IPAddressPool count: ' + (_metallb_pools.resources | default([]) | length | string) + ')' if 'MetalLB' in (_existing_lb | default('', true)) else '' }}"
+          ansible.builtin.debug:
+            msg:
+              - ""
+              - "  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+              - "  ┃   [SKIP]  METALLB  --  ALREADY PRESENT                                  ┃"
+              - "  ┃          Existing LB controller is functional — install skipped.        ┃"
+              - "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+              - "          Detected: {{ _detail }}"
+              - ""
+          when: _lb_functional | trim == 'true'
+
+    - name: "metallb | ━━━ BEGIN: MetalLB ━━━"
+      when: (_existing_lb | default('', true) | trim | length == 0) or _metallb_existing.status is defined
+      ansible.builtin.debug:
+        msg: "Installing MetalLB {{ metallb_version }} (L2 mode)..."
+
+    # ── Auto-detect IP if not set ─────────────────────────────────────────
+
+    - name: "metallb | Proceed with install"
+      when: (_existing_lb | default('', true) | trim | length == 0) or _metallb_existing.status is defined
+      block:
+        - name: "metallb | Auto-detect IP for pool"
+          when: metallb_ip_range | default('', true) | length == 0
+          block:
+            - name: "metallb | Get all node IPs from cluster"
+              ansible.builtin.shell:
+                cmd: |
+                  kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}'
+                executable: /bin/bash
+              environment:
+                KUBECONFIG: "{{ kubernetes_kubeconfig | default(ansible_facts.env.HOME + '/.kube/config') }}"
+              changed_when: false
+              register: _metallb_all_node_ips
+              failed_when: false
+
+            - name: "metallb | Get control-plane node IPs"
+              ansible.builtin.shell:
+                cmd: |
+                  kubectl get nodes -l node-role.kubernetes.io/control-plane \
+                    -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}'
+                executable: /bin/bash
+              environment:
+                KUBECONFIG: "{{ kubernetes_kubeconfig | default(ansible_facts.env.HOME + '/.kube/config') }}"
+              changed_when: false
+              register: _metallb_cp_node_ips
+              failed_when: false
+
+            - name: "metallb | Parse node IPs"
+              vars:
+                _node_ips: "{{ _metallb_all_node_ips.stdout | default('') | trim | split() }}"
+                _cp_ips: "{{ _metallb_cp_node_ips.stdout | default('') | trim | split() }}"
+              ansible.builtin.set_fact:
+                _metallb_node_count: "{{ _node_ips | length }}"
+                _metallb_node_ips_list: "{{ _node_ips }}"
+                _metallb_cp_count: "{{ _cp_ips | length }}"
+                _metallb_cp_ips_list: "{{ _cp_ips }}"
+
+            # ──────────────────────────────────────────────────────────────────
+            # IP Allocation Strategy (kube-proxy-mode aware)
+            # ──────────────────────────────────────────────────────────────────
+            # Detect the running kube-proxy mode — the safe pool depends on it.
+            #
+            # nftables / iptables mode (default, recommended):
+            #   No kube-ipvs0 dummy interface. LoadBalancer IPs are NAT'd via
+            #   rules, not bound to any node interface. Safe to use node IPs.
+            #     Single-node  → node IP/32
+            #     Single-CP    → master IP/32 (most convenient)
+            #     Multi-CP     → master1 IP/32 (same, or use range if preferred)
+            #
+            # ipvs mode (legacy, requires extra care):
+            #   kube-proxy binds every LoadBalancer external IP to kube-ipvs0
+            #   on EVERY node. If the pool IP matches a real node IP, that
+            #   node's kernel hijacks traffic locally → worker-to-master TCP
+            #   returns "Connection refused", NotReady cascade, total outage.
+            #     Single-node  → node IP/32 (only one node, no peer to hijack)
+            #     Multi-node   → .240-.250 range (must not overlap node IPs;
+            #                    requires NAT at network edge for external access)
+            # ──────────────────────────────────────────────────────────────────
+
+            - name: "metallb | Detect running kube-proxy mode"
+              ansible.builtin.shell:
+                cmd: |
+                  kubectl get cm -n kube-system kube-proxy -o jsonpath='{.data.config\.conf}' 2>/dev/null \
+                    | grep -E '^mode:' | awk '{print $2}' | tr -d '"' || true
+                executable: /bin/bash
+              environment:
+                KUBECONFIG: "{{ kubernetes_kubeconfig | default(ansible_facts.env.HOME + '/.kube/config') }}"
+              changed_when: false
+              register: _metallb_kp_mode
+              failed_when: false
+
+            - name: "metallb | Resolve kube-proxy mode"
+              ansible.builtin.set_fact:
+                _metallb_kp_mode_resolved: "{{ ((_metallb_kp_mode.stdout | default('') | trim) or (kubernetes_kube_proxy_mode | default('nftables'))) | trim }}"
+
+            # Use separate tasks per branch — simplest possible logic,
+            # no Jinja whitespace folding, no stringification.
+            - name: "metallb | Pool — single-node (node IP/32)"
+              ansible.builtin.set_fact:
+                metallb_ip_range: "{{ _metallb_node_ips_list[0] }}/32"
+              when: _metallb_node_ips_list | length == 1
+
+            - name: "metallb | Pool — single-CP + workers / nftables (master IP/32, no NAT)"
+              ansible.builtin.set_fact:
+                metallb_ip_range: "{{ _metallb_cp_ips_list[0] }}/32"
+              when:
+                - _metallb_node_ips_list | length > 1
+                - _metallb_cp_ips_list | length == 1
+                - _metallb_kp_mode_resolved != 'ipvs'
+
+            - name: "metallb | Pool — multi-CP / any mode (.240-.250 range, NAT at edge)"
+              ansible.builtin.set_fact:
+                metallb_ip_range: "{{ _metallb_node_ips_list[0].split('.')[0:3] | join('.') }}.240-{{ _metallb_node_ips_list[0].split('.')[0:3] | join('.') }}.250"
+              when:
+                - _metallb_node_ips_list | length > 1
+                - _metallb_cp_ips_list | length > 1
+
+            - name: "metallb | Pool — multi-node / ipvs (.240-.250 range, avoid IPVS collision)"
+              ansible.builtin.set_fact:
+                metallb_ip_range: "{{ _metallb_node_ips_list[0].split('.')[0:3] | join('.') }}.240-{{ _metallb_node_ips_list[0].split('.')[0:3] | join('.') }}.250"
+              when:
+                - _metallb_node_ips_list | length > 1
+                - _metallb_cp_ips_list | length <= 1
+                - _metallb_kp_mode_resolved == 'ipvs'
+
+            - name: "metallb | Pool decision summary"
+              ansible.builtin.debug:
+                msg:
+                  - "kube-proxy mode: {{ _metallb_kp_mode_resolved }}"
+                  - "Pool range:      {{ metallb_ip_range }}"
+                  - "{{ 'IPVS mode detected — pool avoids node IPs (NAT needed at edge).' if _metallb_kp_mode_resolved == 'ipvs' else 'nftables/iptables — node IP is safe; no NAT needed.' }}"
+
+            - name: "metallb | Fail — could not auto-detect a valid IP range"
+              ansible.builtin.fail:
+                msg: |-
+                  MetalLB IP auto-detection failed.
+                    all-nodes rc:     {{ _metallb_all_node_ips.rc | default('unknown') }}
+                    all-nodes stdout: "{{ _metallb_all_node_ips.stdout | default('') }}"
+                    all-nodes count:  {{ _metallb_node_count | default('0') }}
+                    cp-nodes rc:      {{ _metallb_cp_node_ips.rc | default('unknown') }}
+                    cp-nodes stdout:  "{{ _metallb_cp_node_ips.stdout | default('') }}"
+                    cp-nodes count:   {{ _metallb_cp_count | default('0') }}
+                    kube-proxy mode:  {{ _metallb_kp_mode_resolved | default('unknown') }}
+
+                  Set metallb_ip_range explicitly in nodes.yaml, e.g.:
+                    metallb_ip_range: "10.115.150.144/32"          # nftables/iptables, any topology
+                    metallb_ip_range: "10.115.150.240-10.115.150.250"  # ipvs + multi-node
+              when: metallb_ip_range | default('', true) | length == 0
+
+        - name: "metallb | IP pool range"
+          ansible.builtin.debug:
+            msg: "MetalLB IP pool: {{ metallb_ip_range }}"
+
+        # ── Helm install ──────────────────────────────────────────────────────
+
+        - name: "metallb | Label namespace — PSS"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ metallb_namespace }}"
+                labels:
+                  pod-security.kubernetes.io/enforce: "privileged"
+                  pod-security.kubernetes.io/audit: "privileged"
+                  pod-security.kubernetes.io/warn: "privileged"
+          when: enforce_pss | default(false) | bool
+
+        - name: "metallb | Add Helm repo"
+          kubernetes.core.helm_repository:
+            name: metallb
+            repo_url: "{{ metallb_helm_repo }}"
+
+        - name: "metallb | Install via Helm"
+          kubernetes.core.helm:
+            name: metallb
+            chart_ref: metallb/metallb
+            release_namespace: "{{ metallb_namespace }}"
+            create_namespace: true
+            chart_version: "{{ metallb_version }}"
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values:
+              controller:
+                affinity: "{{ _platform_affinity | default({}) }}"
+
+        - name: "metallb | Wait for controller"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            name: metallb-controller
+            namespace: "{{ metallb_namespace }}"
+          register: _metallb_ctrl
+          until:
+            - _metallb_ctrl.resources | length > 0
+            - _metallb_ctrl.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+          retries: 60
+          delay: 5
+
+        - name: "metallb | Wait for speaker DaemonSet"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: DaemonSet
+            name: metallb-speaker
+            namespace: "{{ metallb_namespace }}"
+          register: _metallb_spk
+          until:
+            - _metallb_spk.resources | length > 0
+            - (_metallb_spk.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+            - (_metallb_spk.resources[0].status.numberReady | default(0) | int) == (_metallb_spk.resources[0].status.desiredNumberScheduled | int)
+          retries: 60
+          delay: 5
+
+        # ── L2 configuration ─────────────────────────────────────────────────
+
+        - name: "metallb | Pause for webhook readiness"
+          ansible.builtin.pause:
+            seconds: 5
+
+        - name: "metallb | Apply IPAddressPool and L2Advertisement"
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ lookup('ansible.builtin.template', 'ip-address-pool.yaml.j2') | from_yaml_all | list }}"
+
+        - name: "metallb | ━━━ DONE: MetalLB ━━━"
+          ansible.builtin.debug:
+            msg: "MetalLB {{ metallb_version }} installed. L2 pool: {{ metallb_ip_range }}"

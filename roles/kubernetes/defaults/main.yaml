@@ -1,0 +1,130 @@
+---
+# =============================================================================
+# Kubernetes Role Defaults — Single source of truth for K8s configuration
+# =============================================================================
+# Override any of these in group_vars/all.yaml or via -e on the CLI.
+# =============================================================================
+
+# --- BYO Cluster ---
+# Set to the absolute path of an existing kubeconfig to skip Kubespray entirely.
+# Leave empty for managed install (Kubespray provisions the cluster).
+existing_kubernetes: ""
+
+# --- Cluster Detection ---
+# If true, skips install when an existing cluster is detected
+kubernetes_skip_if_exists: true
+
+# --- Kubernetes Version (one place to change) ---
+kubernetes_version: "1.34.3"
+
+# Minimum K8s minor version required by the stack
+# (sidecar containers, Gateway API, KServe v0.17+, Inference Extension)
+kubernetes_minimum_minor_version: 29
+
+# --- Kubespray ---
+kubespray_version: "v2.30.0"
+kubespray_repo: "https://github.com/kubernetes-sigs/kubespray.git"
+# Repo-local path — keeps the host footprint inside the project tree.
+# The installer overrides this at runtime via -e kubespray_dir=<SCRIPT_DIR>/.kubespray
+kubespray_dir: "{{ playbook_dir }}/../.kubespray"
+# Directory kubespray installs its own binaries into (kubelet/kubeadm/kubectl/helm).
+# In localhost mode the node IS the bastion, so we steer kubespray off the shared
+# /usr/local/bin — otherwise its `reset.yml` would delete the operator's kubectl/helm
+# (installed by './es_auto_installer.sh configure'). Kept in the repo-local kubespray
+# tree, consistent with kubespray_dir. On remote nodes /usr/local/bin is
+# kubespray-owned and left as-is.
+kubespray_bin_dir_local: "{{ kubespray_dir }}/bin"
+
+# --- Networking ---
+kubernetes_cni: "calico"
+kubernetes_cluster_cidr: "10.233.64.0/18"
+kubernetes_service_cidr: "10.233.0.0/18"
+kubernetes_dns_mode: "coredns"
+
+# kube-proxy mode: nftables | iptables | ipvs
+#   nftables (default, GA since k8s 1.33): iptables-like semantics with
+#     IPVS-level performance. No kube-ipvs0 dummy interface, so MetalLB
+#     LoadBalancer IPs cannot collide with node IPs.
+#   ipvs: legacy option. Binds every LoadBalancer external IP to kube-ipvs0
+#     on EVERY node. If a MetalLB pool IP matches a node's real IP, that
+#     node's kernel hijacks the IP locally — catastrophic outage.
+#   iptables: fallback for clusters < k8s 1.31. Same safety profile as
+#     nftables but linear rule scan degrades at 1000+ services.
+kubernetes_kube_proxy_mode: "nftables"
+
+# --- Kubelet CPU / NUMA Policy ---
+# Required for NUMA-aware CPU pinning (model-manager).
+# Only applied when kubernetes_accelerator=cpu (not needed for GPU clusters).
+# static                      = exclusive CPU allocation for Guaranteed QoS pods
+# best-effort                 = prefer single-NUMA placement, allow cross-NUMA when needed
+# full-pcpus-only             = allocate whole physical cores (both HT siblings)
+# distribute-cpus-across-numa = evenly distribute CPUs across NUMA nodes (K8s 1.33+)
+# strict-cpu-reservation      = enforce strict CPU reservation (K8s 1.35+)
+#
+# NOTE: prefer-align-cpus-by-uncorecache (K8s 1.36+) conflicts with distribute-cpus-across-numa
+#       and cannot be used together. We prioritize distribute-cpus-across-numa for cross-NUMA workloads.
+kubelet_cpu_manager_policy: "static"
+kubelet_topology_manager_policy: "best-effort"
+kubelet_cpu_manager_policy_options:
+  full-pcpus-only: "true"
+  distribute-cpus-across-numa: "true"
+  strict-cpu-reservation: "true"
+
+# --- Kubelet CPU Reservation ---
+# Single-node: 4 CPUs (equally distributed across NUMA nodes)
+# Multi-node: 8 CPUs (equally distributed across NUMA nodes)
+# Auto-detected based on cluster size and distributed evenly across NUMA topology
+kubelet_reserved_cpus_single_node: 4
+kubelet_reserved_cpus_multi_node: 8
+
+# Additional reservations (beyond pinned CPUs) for kubelet and system daemons
+kubelet_kube_reserved:
+  cpu: "500m"      # Additional CPU for kubelet overhead
+  memory: "1Gi"    # Memory for kubelet
+kubelet_system_reserved:
+  cpu: "500m"      # Additional CPU for system daemons (sshd, systemd, etc.)
+  memory: "1Gi"    # Memory for system daemons
+
+# --- Accelerator Type ---
+# cpu = CPU-only inference (enables NUMA pinning policies above)
+# gpu = GPU-accelerated (skips CPU pinning — GPU scheduling handles placement)
+kubernetes_accelerator: "cpu"
+
+# --- Container Runtime ---
+kubernetes_container_manager: "containerd"
+
+# --- Kubeconfig ---
+# Repo-local path by default; installer passes env_dir/kubeconfig.yaml at runtime.
+# Set kubernetes_kubeconfig in global_config.yaml to opt into writing ~/.kube/config.
+kubernetes_kubeconfig: "{{ env_dir | default(playbook_dir + '/../env/local') }}/kubeconfig.yaml"
+kubernetes_context: ""
+# Unique name for this cluster's kubeconfig entries (cluster, user, context).
+# If empty, defaults to hostname
+kubernetes_cluster_name: "inference-cluster"
+
+# --- Kubespray Inventory ---
+# The installer passes kubespray_custom_inventory pointing at the env's inventory.
+# For localhost mode, the role generates a single-node inventory automatically.
+kubespray_custom_inventory: ""
+
+# --- SSH credentials (custom_inventory mode) ---
+kubernetes_ssh_user: ""
+kubernetes_ssh_key: ""
+
+# --- Proxy (if behind corporate proxy) ---
+http_proxy: ""
+https_proxy: ""
+no_proxy: "localhost,127.0.0.1,.svc,.cluster.local,{{ kubernetes_service_cidr }},{{ kubernetes_cluster_cidr }}"
+
+# --- Node Topology ---
+# When true (multi-node only), control-plane nodes are labelled
+# workload-class=platform and workers workload-class=inference.
+# Pods use soft affinity (preferredDuringSchedulingIgnoredDuringExecution) —
+# scheduler prefers matching nodes but falls back freely. No taints applied.
+# Overridden by global_config.yaml (default: true).
+node_topology_enabled: false
+
+# --- System Requirements ---
+kubernetes_disable_swap: true
+kubernetes_disable_firewall: false
+kubernetes_load_kernel_modules: true

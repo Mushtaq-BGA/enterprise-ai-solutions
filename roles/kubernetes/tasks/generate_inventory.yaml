@@ -1,0 +1,29 @@
+---
+# =============================================================================
+# Kubernetes — Generate kubespray inventory
+# =============================================================================
+# The env inventory (kubespray_custom_inventory) is always the source of truth.
+# For localhost-only deployments the same file is passed directly to kubespray.
+# For remote/multi-node deployments it is also passed as-is; kubespray reads
+# the SSH credentials directly from the inventory vars.
+# =============================================================================
+
+- name: "kubernetes | inventory | Set path"
+  ansible.builtin.set_fact:
+    _kubespray_inventory: "{{ kubespray_custom_inventory }}"
+
+- name: "kubernetes | inventory | Verify inventory file exists"
+  ansible.builtin.stat:
+    path: "{{ _kubespray_inventory }}"
+  register: _inv_stat
+
+- name: "kubernetes | inventory | Fail if missing"
+  ansible.builtin.assert:
+    that: _inv_stat.stat.exists
+    fail_msg: >-
+      Inventory not found: {{ _kubespray_inventory }}
+      Run: ./es_auto_installer.sh init <env>
+
+- name: "kubernetes | inventory | Mode"
+  ansible.builtin.debug:
+    msg: "needs_ssh={{ _k8s_needs_ssh }} → inventory: {{ _kubespray_inventory | trim }}"

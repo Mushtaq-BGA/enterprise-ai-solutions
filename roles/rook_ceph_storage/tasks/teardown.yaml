@@ -1,0 +1,341 @@
+---
+# =============================================================================
+# Rook-Ceph Storage — Teardown
+# =============================================================================
+# WARNING: This removes Ceph cluster and ALL data stored in it.
+# Order matters: CRDs before operator, or finalizers will hang.
+# =============================================================================
+
+- name: "rook_ceph | teardown | ━━━ BEGIN ━━━"
+  ansible.builtin.debug:
+    msg: "Tearing down Rook-Ceph (this will destroy all Ceph-backed PVCs)..."
+
+- name: "rook_ceph | teardown | Remove RBD StorageClass"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ rook_ceph_rbd_storage_class }}"
+  failed_when: false
+
+- name: "rook_ceph | teardown | Remove CephFS StorageClass"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ rook_ceph_fs_storage_class }}"
+  failed_when: false
+
+- name: "rook_ceph | teardown | Remove CephFilesystem"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: ceph.rook.io/v1
+    kind: CephFilesystem
+    name: "{{ rook_ceph_filesystem_name }}"
+    namespace: "{{ rook_ceph_operator_namespace }}"
+    wait: true
+    wait_timeout: 120
+  failed_when: false
+
+- name: "rook_ceph | teardown | Remove CephBlockPool"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: ceph.rook.io/v1
+    kind: CephBlockPool
+    name: "{{ rook_ceph_block_pool_name }}"
+    namespace: "{{ rook_ceph_operator_namespace }}"
+    wait: true
+    wait_timeout: 120
+  failed_when: false
+
+- name: "rook_ceph | teardown | Patch CephCluster cleanupPolicy"
+  kubernetes.core.k8s:
+    state: present
+    api_version: ceph.rook.io/v1
+    kind: CephCluster
+    name: rook-ceph
+    namespace: "{{ rook_ceph_operator_namespace }}"
+    definition:
+      spec:
+        cleanupPolicy:
+          confirmation: "yes-really-destroy-data"
+  failed_when: false
+
+- name: "rook_ceph | teardown | Remove CephCluster"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: ceph.rook.io/v1
+    kind: CephCluster
+    name: rook-ceph
+    namespace: "{{ rook_ceph_operator_namespace }}"
+    wait: true
+    wait_timeout: 300
+  failed_when: false
+
+- name: "rook_ceph | teardown | Uninstall Rook operator Helm release"
+  kubernetes.core.helm:
+    name: rook-ceph
+    release_namespace: "{{ rook_ceph_operator_namespace }}"
+    state: absent
+    wait: true
+    timeout: "{{ rook_ceph_operator_wait_timeout }}"
+  failed_when: false
+
+- name: "rook_ceph | teardown | Remove namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ rook_ceph_operator_namespace }}"
+    wait: true
+    wait_timeout: 120
+  failed_when: false
+
+# ─── Clean host paths + optionally wipe disks via DaemonSet ───────────────
+# Always cleans /var/lib/rook (stale mon stores). Wiping the OSD devices is
+# opt-in via rook_ceph_teardown_wipe_devices, because a stale path in the map
+# would destroy whatever now lives on it. Left off, the disks keep their
+# bluestore labels and must be wiped by hand (blkdiscard -f) before Ceph can be
+# re-installed, or ceph-volume skips them and creates 0 OSDs.
+
+- name: "rook_ceph | teardown | Ensure cleanup namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: rook-ceph-cleanup
+
+# One key per node name, value = space-separated device paths. Each pod reads
+# only the key matching its own node, so the container needs no JSON parsing —
+# the previous sed-based approach silently matched nothing and wiped no disks.
+- name: "rook_ceph | teardown | Create device-map ConfigMap"
+  when:
+    - rook_ceph_teardown_wipe_devices | bool
+    - rook_ceph_devices | default({}) | length > 0
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: rook-ceph-device-map
+        namespace: rook-ceph-cleanup
+      data: >-
+        {{ dict(rook_ceph_devices.keys() | list
+                | zip(rook_ceph_devices.values() | map('join', ' ') | list)) }}
+
+- name: "rook_ceph | teardown | Deploy host-path + disk cleanup DaemonSet"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: rook-ceph-cleanup
+        namespace: rook-ceph-cleanup
+      spec:
+        selector:
+          matchLabels:
+            app: rook-ceph-cleanup
+        template:
+          metadata:
+            labels:
+              app: rook-ceph-cleanup
+          spec:
+            tolerations:
+              - operator: Exists
+            containers:
+                # The ceph image, not busybox: blkdiscard and wipefs are
+                # util-linux binaries that busybox does not provide as applets.
+              - name: cleanup
+                image: "{{ rook_ceph_image }}"
+                securityContext:
+                  privileged: true
+                command: ["/bin/bash", "-c"]
+                env:
+                  - name: NODE_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: spec.nodeName
+                args:
+                  - |
+                    set -u
+                    rm -rf /host-var-lib-rook/* || true
+                    rc=0
+                    if [ -f "/config/${NODE_NAME}" ]; then
+                      for dev in $(cat "/config/${NODE_NAME}"); do
+                        if [ ! -b "$dev" ]; then
+                          echo "SKIP $dev (not a block device on ${NODE_NAME})"
+                          continue
+                        fi
+                        # Refuse anything mounted or not carrying a whole-disk
+                        # bluestore signature: the map may name a device that has
+                        # been repurposed since install, and this runs privileged.
+                        # Mounts come from the host's own mountinfo matched on
+                        # major:minor — lsblk MOUNTPOINT inside a container reports
+                        # the container's mount table, not the host's.
+                        mounted=0
+                        for mm in $(lsblk -rno MAJ:MIN "$dev" 2>/dev/null); do
+                          awk -v id="$mm" '$3==id {f=1} END{exit !f}' /host-proc/1/mountinfo \
+                            && mounted=1
+                        done
+                        if [ "$mounted" -eq 1 ]; then
+                          echo "REFUSE $dev (mounted on the host)"; rc=1; continue
+                        fi
+                        # blkid, not lsblk FSTYPE: lsblk reads its FSTYPE column from
+                        # the udev database, which no container has, so it always
+                        # comes back empty and every disk would be refused.
+                        ft=$(blkid -p -o value -s TYPE "$dev" 2>/dev/null)
+                        if [ "$ft" != "ceph_bluestore" ]; then
+                          echo "REFUSE $dev (type='$ft', expected ceph_bluestore)"; rc=1; continue
+                        fi
+                        echo "discarding $dev"
+                        # blkdiscard clears the whole device. The dd fallback is for
+                        # disks that reject discard and zeroes each offset where
+                        # bluestore keeps a label, not just the head.
+                        if ! blkdiscard -f "$dev"; then
+                          for off in 0 1024 10240 102400; do
+                            dd if=/dev/zero of="$dev" bs=1M count=16 seek="$off" \
+                               oflag=direct conv=notrunc status=none 2>/dev/null || true
+                          done
+                        fi
+                        wipefs -a "$dev" >/dev/null || { echo "FAILED wipefs $dev"; rc=1; continue; }
+                        after=$(blkid -p -o value -s TYPE "$dev" 2>/dev/null)
+                        [ -n "$after" ] && { echo "FAILED $dev still labelled '$after'"; rc=1; }
+                      done
+                    else
+                      echo "device wipe disabled — host paths only"
+                    fi
+                    [ "$rc" -eq 0 ] && echo "CLEANED" || echo "CLEANUP_FAILED"
+                    sleep 3600
+                volumeMounts:
+                  - name: rook-data
+                    mountPath: /host-var-lib-rook
+                  - name: host-dev
+                    mountPath: /dev
+                  - name: host-proc
+                    mountPath: /host-proc
+                    readOnly: true
+                  - name: device-map
+                    mountPath: /config
+                    readOnly: true
+            volumes:
+              - name: rook-data
+                hostPath:
+                  path: /var/lib/rook
+                  type: DirectoryOrCreate
+              - name: host-dev
+                hostPath:
+                  path: /dev
+              # The mount guard reads the host's mountinfo through this; a
+              # container's own /proc shows only its namespace.
+              - name: host-proc
+                hostPath:
+                  path: /proc
+              - name: device-map
+                configMap:
+                  name: rook-ceph-device-map
+                  optional: true
+            restartPolicy: Always
+
+- name: "rook_ceph | teardown | Wait for cleanup pods to run"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: rook-ceph-cleanup
+    label_selectors:
+      - app=rook-ceph-cleanup
+  register: _rook_cleanup_pods
+  until:
+    - _rook_cleanup_pods.resources | length > 0
+    - (_rook_cleanup_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length)
+      == (_rook_cleanup_pods.resources | length)
+  retries: 30
+  delay: 5
+
+# Per pod, not label-aggregated: a single k8s_log call concatenates every pod's
+# output, so one node reporting CLEANED would mask another that failed.
+- name: "rook_ceph | teardown | Verify cleanup completed on every node"
+  kubernetes.core.k8s_log:
+    namespace: rook-ceph-cleanup
+    name: "{{ item }}"
+  register: _rook_cleanup_log
+  until: "'CLEANED' in (_rook_cleanup_log.log | default('')) or 'CLEANUP_FAILED' in (_rook_cleanup_log.log | default(''))"
+  retries: 12
+  delay: 5
+  loop: "{{ _rook_cleanup_pods.resources | map(attribute='metadata.name') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "rook_ceph | teardown | Report nodes whose disk wipe failed"
+  ansible.builtin.debug:
+    msg: >-
+      Disk cleanup FAILED on {{ _rook_cleanup_failed | join(', ') }}.
+      Ceph writes bluestore labels at several offsets, so a partial wipe leaves a
+      detectable stale cluster FSID and re-deploying OSDs on these disks will fail.
+      Wipe them manually (blkdiscard -f <dev>) before re-installing.
+  vars:
+    _rook_cleanup_failed: >-
+      {{ _rook_cleanup_log.results | default([])
+         | rejectattr('log', 'search', 'CLEANED')
+         | map(attribute='item') | list }}
+  when: _rook_cleanup_failed | length > 0
+
+- name: "rook_ceph | teardown | Remove cleanup DaemonSet"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    name: rook-ceph-cleanup
+    namespace: rook-ceph-cleanup
+
+- name: "rook_ceph | teardown | Remove cleanup namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: rook-ceph-cleanup
+    wait: true
+    wait_timeout: 60
+  failed_when: false
+
+# ─── Unlabel storage nodes ────────────────────────────────────────────────
+
+- name: "rook_ceph | teardown | Remove {{ rook_ceph_storage_node_label_key }} label from storage nodes"
+  kubernetes.core.k8s_json_patch:
+    kind: Node
+    name: "{{ item }}"
+    patch:
+      - op: remove
+        # RFC 6901: '/' and '~' must be escaped in a JSON Pointer segment, so a
+        # prefixed label key (e.g. example.com/type) still targets one label.
+        path: "/metadata/labels/{{ rook_ceph_storage_node_label_key | replace('~', '~0') | replace('/', '~1') }}"
+  loop: "{{ rook_ceph_devices.keys() | list }}"
+  loop_control:
+    label: "{{ item }}"
+  failed_when: false
+
+- name: "rook_ceph | teardown | ━━━ DONE ━━━"
+  ansible.builtin.debug:
+    msg:
+      - "Rook-Ceph teardown complete."
+      - "Host path /var/lib/rook cleaned on all nodes."
+      - >-
+        {% if not (rook_ceph_teardown_wipe_devices | bool) %}
+        OSD devices were NOT wiped (rook_ceph_teardown_wipe_devices is false). They
+        still carry bluestore labels, so re-installing Ceph will create 0 OSDs until
+        each is wiped with: blkdiscard -f <device> && wipefs -a <device>
+        {% elif rook_ceph_devices | default({}) | length == 0 %}
+        No raw devices to wipe.
+        {% elif _rook_wipe_failed | length == 0 %}
+        OSD devices discarded on {{ rook_ceph_devices.keys() | list | join(', ') }} — safe to re-deploy.
+        {% else %}
+        WARNING: disk wipe failed on {{ _rook_wipe_failed | join(', ') }} — wipe manually before re-installing.
+        {% endif %}
+  vars:
+    _rook_wipe_failed: >-
+      {{ _rook_cleanup_log.results | default([])
+         | rejectattr('log', 'search', 'CLEANED')
+         | map(attribute='item') | list }}

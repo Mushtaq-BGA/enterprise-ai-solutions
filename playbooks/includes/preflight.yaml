@@ -1,0 +1,296 @@
+---
+# =============================================================================
+# Shared Preflight — Load components.yaml + resolve target → _active_components
+# =============================================================================
+# Required vars (set by the calling playbook):
+#   component_action:  install | teardown | validate
+#   target:            "all" or comma-separated component/layer names
+#
+# Optional vars:
+#   _include_deps:     true → auto-include dep/dependant layers  (default: true)
+#   _skip_components:  comma-separated names to exclude
+#
+# Output:
+#   _active_components:  list of component dicts, in execution order
+# =============================================================================
+
+# ── Load registry ─────────────────────────────────────────────────────────────
+
+- name: "Preflight - Load core component registry"
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../config/components.yaml"
+
+- name: "Preflight - Check for ext directory"
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../ext"
+  register: _ext_dir
+
+- name: "Preflight - Discover ext component manifests"
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/../ext"
+    patterns: components.yaml
+    recurse: true
+    file_type: file
+    follow: true
+    excludes: ['.git', 'node_modules', '.venv']
+  register: _ext_manifests
+  when: _ext_dir.stat.isdir | default(false)
+
+# lookup('template') NOT lookup('file') — renders Jinja in ext manifests so
+# `enabled: "{{ var }}"` resolves to "True"/"False" instead of raw string (always truthy).
+- name: "Preflight - Merge ext components + layers"
+  ansible.builtin.set_fact:
+    components: >-
+      {{ components | default([])
+         + ((lookup('template', item.path) | from_yaml).components | default([])) }}
+    layers: >-
+      {{ layers | default([])
+         + ((lookup('template', item.path) | from_yaml).layers | default([])) }}
+  loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
+  loop_control:
+    label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
+
+# ── Connectivity check (install only) ────────────────────────────────────────
+
+- name: "Preflight - Proxy: fail fast if proxy set without no_proxy"
+  ansible.builtin.fail:
+    msg: >-
+      http_proxy or https_proxy is configured but no_proxy is empty.
+      You MUST provide no_proxy with at least your cluster service CIDR, pod CIDR,
+      and .svc,.cluster.local to prevent internal traffic routing through the proxy.
+      Set no_proxy in global_config.yaml.
+  when:
+    - (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0)
+    - no_proxy | default('') | length == 0
+
+- name: "Preflight - Check internet connectivity"
+  when: component_action | default('install') == 'install'
+  block:
+    - name: "Preflight - Check internet connectivity"
+      ansible.builtin.uri:
+        url: https://google.com
+        method: GET
+        status_code: [200, 301, 302, 303, 307, 429]
+        timeout: 15
+      environment: >-
+        {{
+          {}
+          | combine({'https_proxy': https_proxy, 'HTTPS_PROXY': https_proxy} if https_proxy | default('') | length > 0 else {})
+          | combine({'http_proxy': http_proxy, 'HTTP_PROXY': http_proxy} if http_proxy | default('') | length > 0 else {})
+          | combine({'no_proxy': no_proxy, 'NO_PROXY': no_proxy} if no_proxy | default('') | length > 0 else {})
+        }}
+      register: _internet_check
+      failed_when: false
+      changed_when: false
+
+    - name: "Preflight - Show proxy status"
+      ansible.builtin.debug:
+        msg: >-
+          Proxy in use —
+          https_proxy={{ https_proxy | default('(not set)') }},
+          http_proxy={{ http_proxy | default('(not set)') }},
+          no_proxy={{ no_proxy | default('(not set)') }}
+      when: >-
+        (https_proxy | default('') | length > 0 or http_proxy | default('') | length > 0)
+        and _internet_check.status | default(-1) > 0
+
+    - name: "Preflight - Abort on no connectivity"
+      ansible.builtin.fail:
+        msg: >-
+          No internet connectivity — cannot reach https://google.com
+          (status={{ _internet_check.status | default('unreachable') }}).
+          {% if https_proxy | default('') | length == 0 and http_proxy | default('') | length == 0 %}
+          If behind a corporate proxy, set http_proxy / https_proxy / no_proxy in global_config.yaml.
+          {% else %}
+          Proxy configured — https_proxy={{ https_proxy | default('(not set)') }},
+          http_proxy={{ http_proxy | default('(not set)') }},
+          no_proxy={{ no_proxy | default('(not set)') }}.
+          Verify proxy settings are correct and reachable.
+          {% endif %}
+      when: _internet_check.status | default(-1) not in [200, 301, 302, 303, 307, 429]
+
+# ── CPU Policy Resolution ─────────────────────────────────────────────────────
+# Derive every CPU-pinning variable from the single `kubernetes_cpu_policy`
+# switch, so the operator never has to keep nri_cpu_balloons_enabled and the
+# kubelet_* flags manually aligned (they are mutually exclusive: NRI needs
+# cpuManagerPolicy=none, kubelet-static needs it =static).
+#
+#   nri-balloons    (default) NRI balloons resource policy — NUMA-aware pinning
+#   kubelet-static  kubelet static CPU manager — Guaranteed-QoS exclusive CPUs
+#   best-effort     no pinning, standard CFS scheduler
+#
+# The derived facts are consumed by:
+#   - config/components.yaml       → gates the nri_cpu_balloons role
+#   - roles/kubernetes             → kubespray_extra_auto.yml (kubelet flags,
+#                                    reservedSystemCPUs) + reserved-CPU calc
+#   - the inference stack          → MM_CPU_POLICY for model-manager
+
+- name: "Preflight - CPU policy: validate value"
+  ansible.builtin.assert:
+    that:
+      - kubernetes_cpu_policy | default('nri-balloons') in ['nri-balloons', 'kubelet-static', 'best-effort']
+    fail_msg: >-
+      Invalid kubernetes_cpu_policy='{{ kubernetes_cpu_policy | default('') }}'.
+      Must be one of: nri-balloons (default), kubelet-static, best-effort.
+    quiet: true
+
+# GPU clusters do no CPU pinning at all — the device plugin and GPU scheduler
+# own placement. Downgrade to best-effort rather than half-configuring kubelet.
+- name: "Preflight - CPU policy: force best-effort on non-CPU accelerators"
+  when:
+    - (kubernetes_accelerator | default('cpu')) != 'cpu'
+    - (kubernetes_cpu_policy | default('nri-balloons')) != 'best-effort'
+  block:
+    - name: "Preflight - CPU policy: warn that accelerator overrides pinning"
+      ansible.builtin.debug:
+        msg: >-
+          kubernetes_accelerator='{{ kubernetes_accelerator }}' (not 'cpu') — CPU
+          pinning does not apply. Ignoring
+          kubernetes_cpu_policy='{{ kubernetes_cpu_policy }}' and using best-effort.
+
+    - name: "Preflight - CPU policy: downgrade to best-effort"
+      ansible.builtin.set_fact:
+        kubernetes_cpu_policy: "best-effort"
+
+- name: "Preflight - CPU policy: derive settings for nri-balloons"
+  ansible.builtin.set_fact:
+    nri_cpu_balloons_enabled: true
+    kubelet_cpu_manager_policy: "none"
+    kubelet_topology_manager_policy: "none"
+    kubelet_cpu_manager_policy_options: {}
+  when: (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
+
+# kubelet-static: NRI must stay off (its balloon cpusets would fight the
+# kubelet CPU manager for the same cores). The kubelet_* values fall back to the
+# kubernetes role defaults (static / best-effort / full-pcpus-only +
+# distribute-cpus-across-numa + strict-cpu-reservation), and an operator
+# override in global_config.yaml still wins because `| default(...)` only
+# supplies a value when the var is undefined.
+- name: "Preflight - CPU policy: derive settings for kubelet-static"
+  ansible.builtin.set_fact:
+    nri_cpu_balloons_enabled: false
+    kubelet_cpu_manager_policy: "static"
+    kubelet_topology_manager_policy: "{{ kubelet_topology_manager_policy | default('best-effort') }}"
+    kubelet_cpu_manager_policy_options: >-
+      {{ kubelet_cpu_manager_policy_options | default({}, true)
+         if (kubelet_cpu_manager_policy_options | default({}, true) | length > 0)
+         else {'full-pcpus-only': 'true', 'distribute-cpus-across-numa': 'true'} }}
+  when: (kubernetes_cpu_policy | default('nri-balloons')) == 'kubelet-static'
+
+- name: "Preflight - CPU policy: derive settings for best-effort"
+  ansible.builtin.set_fact:
+    nri_cpu_balloons_enabled: false
+    kubelet_cpu_manager_policy: "none"
+    kubelet_topology_manager_policy: "none"
+    kubelet_cpu_manager_policy_options: {}
+  when: (kubernetes_cpu_policy | default('nri-balloons')) == 'best-effort'
+
+- name: "Preflight - CPU policy: announce"
+  ansible.builtin.debug:
+    msg: >-
+      CPU policy: {{ kubernetes_cpu_policy | default('nri-balloons') }}
+      → kubelet_cpu_manager_policy={{ kubelet_cpu_manager_policy }},
+      kubelet_topology_manager_policy={{ kubelet_topology_manager_policy }},
+      nri_cpu_balloons_enabled={{ nri_cpu_balloons_enabled }}
+
+# ── Workload-placement affinity ───────────────────────────────────────────────
+
+- name: "Preflight - Define workload affinity (soft, label-based)"
+  ansible.builtin.set_fact:
+    _platform_affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: workload-class
+                  operator: In
+                  values: [platform]
+    _inference_affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: workload-class
+                  operator: In
+                  values: [inference]
+          - weight: 90
+            preference:
+              matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+  when: node_topology_enabled | default(true) | bool
+
+- name: "Preflight - Empty affinity when topology disabled"
+  ansible.builtin.set_fact:
+    _platform_affinity: {}
+    _inference_affinity: {}
+  when: not (node_topology_enabled | default(true) | bool)
+
+# Resolve storage_backend to a specific role or configuration.
+- name: "Preflight - Storage: resolve backend"
+  ansible.builtin.include_role:
+    name: storage
+    tasks_from: resolve.yaml
+
+- name: "Preflight - Verify required CLI tools"
+  ansible.builtin.command:
+    cmd: "which {{ item }}"
+  loop:
+    - kubectl
+    - helm
+  changed_when: false
+  failed_when: false
+  register: _cli_check
+
+- name: "Preflight - Warn about missing CLI tools"
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item.item }} not found. It will be available after kubernetes role completes."
+  loop: "{{ _cli_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc != 0
+
+# =============================================================================
+# Component Resolution — target → _active_components
+# =============================================================================
+# Custom filter plugin: filter_plugins/resolve_components.py
+# Auto-loaded via ansible.cfg `filter_plugins = filter_plugins`.
+#
+# Resolves the install/teardown target into an ordered component list:
+#   1. Classify target (base / layer name / component name)
+#   2. BFS layer dependencies (downward for install, upward for teardown)
+#   3. Collect components in registry order; narrow for component targets
+#   4. Solution scoping, skip filter, enabled filter (coerces "True"/"False"
+#      strings — fixes ext components whose enabled: is a rendered Jinja expr)
+#   5. Reverse for teardown
+# =============================================================================
+
+- name: "Preflight - Resolve active components (see filter_plugins/resolve_components.py)"
+  ansible.builtin.set_fact:
+    _active_components: >-
+      {{ components | resolve_components(layers,
+                                         target=target,
+                                         action=component_action | default('install'),
+                                         include_deps=_include_deps | default(true) | bool,
+                                         skip=_skip_components | default('')) }}
+    _disabled_components: >-
+      {{ components | disabled_components(layers,
+                                          target=target,
+                                          action=component_action | default('install'),
+                                          include_deps=_include_deps | default(true) | bool,
+                                          skip=_skip_components | default('')) }}
+
+- name: "Preflight - Show skipped components"
+  when: _disabled_components | length > 0
+  ansible.builtin.debug:
+    msg: "Skipped (disabled): {{ _disabled_components | join(', ') }}"
+
+- name: "Preflight - Display execution plan"
+  ansible.builtin.debug:
+    msg: |
+      ━━━ {{ component_action | capitalize }} Plan ━━━
+      Action: {{ component_action }}
+      Target: {{ target }}
+      Components: {{ _active_components | map(attribute='name') | list | join(', ') }}

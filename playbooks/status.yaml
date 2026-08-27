@@ -1,0 +1,106 @@
+---
+# =============================================================================
+# Status Playbook — Show what is currently installed
+# =============================================================================
+# Usage:  ./es_auto_installer.sh status [--env <name>]
+# =============================================================================
+
+- name: "Deployment Status"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    base_domain_name: "{{ base_domain_name | default('solutions.ai') }}"
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    NO_PROXY: "{{ no_proxy | default('') }}"
+    K8S_AUTH_NO_PROXY: "{{ no_proxy | default('') }}"
+
+  tasks:
+    - name: "status | Get all namespaces on cluster"
+      kubernetes.core.k8s_info:
+        kind: Namespace
+      register: _st_namespaces_info
+
+    - name: "status | Filter to application namespaces"
+      ansible.builtin.set_fact:
+        _st_existing_namespaces: >-
+          {{ _st_namespaces_info.resources
+             | map(attribute='metadata.name')
+             | reject('in', ['kube-system', 'kube-public', 'kube-node-lease', 'default', 'local-path-storage'])
+             | list }}
+
+    - name: "status | Get pods in application namespaces"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ item }}"
+      loop: "{{ _st_existing_namespaces }}"
+      register: _st_pods_info
+
+    - name: "status | Build per-namespace pod summary"
+      ansible.builtin.set_fact:
+        _st_ns_summary: >-
+          {%- set result = [] -%}
+          {%- for ns_result in _st_pods_info.results | selectattr('resources', 'defined') -%}
+            {%- set ns = ns_result.item -%}
+            {%- set pods = ns_result.resources -%}
+            {%- set running = pods | selectattr('status.phase', 'equalto', 'Running') | list | length -%}
+            {%- set succeeded = pods | selectattr('status.phase', 'equalto', 'Succeeded') | list | length -%}
+            {%- set pending = pods | selectattr('status.phase', 'equalto', 'Pending') | list | length -%}
+            {%- set failed = pods | selectattr('status.phase', 'equalto', 'Failed') | list | length -%}
+            {%- set total = pods | length -%}
+            {%- set _ = result.append({
+                  'namespace': ns,
+                  'total': total,
+                  'running': running,
+                  'succeeded': succeeded,
+                  'pending': pending,
+                  'failed': failed
+                }) -%}
+          {%- endfor -%}
+          {{ result }}
+
+    - name: "status | Get nodes"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: _st_nodes_info
+
+    - name: "status | Print deployment status"
+      ansible.builtin.debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════════════
+           Intel AI Enterprise Solutions — Deployment Status
+          ══════════════════════════════════════════════════════════════════════════
+
+          Cluster Nodes: {{ _st_nodes_info.resources | length }}
+          {% for node in _st_nodes_info.resources %}
+            - {{ node.metadata.name }} ({{ node.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first | default('Unknown') }})
+          {% endfor %}
+
+          ──────────────────────────────────────────────────────────────────────────
+           Installed Components
+          ──────────────────────────────────────────────────────────────────────────
+            {{ "%-28s" | format("NAMESPACE") }}{{ "%-8s" | format("TOTAL") }}{{ "%-10s" | format("RUNNING") }}{{ "%-10s" | format("PENDING") }}{{ "%-10s" | format("FAILED") }}STATUS
+            {{ "%-28s" | format("─" * 26) }}{{ "%-8s" | format("─" * 6) }}{{ "%-10s" | format("─" * 8) }}{{ "%-10s" | format("─" * 8) }}{{ "%-10s" | format("─" * 8) }}{{ "─" * 8 }}
+          {% for ns in _st_ns_summary | sort(attribute='namespace') if ns.total > 0 %}
+            {{ "%-28s" | format(ns.namespace) }}{{ "%-8s" | format(ns.total) }}{{ "%-10s" | format(ns.running) }}{{ "%-10s" | format(ns.pending) }}{{ "%-10s" | format(ns.failed) }}{{ "✓ Healthy" if ns.failed == 0 and ns.pending == 0 else "⚠ Degraded" if ns.failed > 0 else "… Pending" }}
+          {% endfor %}
+
+          ──────────────────────────────────────────────────────────────────────────
+           Endpoints
+          ──────────────────────────────────────────────────────────────────────────
+            Gateway:     https://{{ base_domain_name }}
+          {% if 'keycloak' in _st_existing_namespaces %}
+            Keycloak:    https://auth.{{ base_domain_name }}
+          {% endif %}
+          {% if 'litellm' in _st_existing_namespaces %}
+            LiteLLM:     https://litellm.{{ base_domain_name }}
+          {% endif %}
+          {% if 'monitoring' in _st_existing_namespaces %}
+            Grafana:     https://grafana.{{ base_domain_name }}
+          {% endif %}
+          ══════════════════════════════════════════════════════════════════════════

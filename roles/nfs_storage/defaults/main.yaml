@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# NFS Storage Role Defaults
+# =============================================================================
+
+# --- NFS Server ---
+# IP override — if empty, auto-resolved from the nfs_server inventory group
+# (falls back to first kube_control_plane host).
+nfs_server: ""
+nfs_path: "/data/nfs"
+
+# --- Helm provisioner ---
+nfs_provisioner_namespace: "nfs-provisioner"
+nfs_provisioner_chart_repo: "https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/"
+nfs_provisioner_chart_repo_name: "nfs-subdir-external-provisioner"
+nfs_provisioner_chart_version: "4.0.18"
+nfs_storageclass_name: "nfs-client"
+# Make 'nfs-client' the cluster-wide default StorageClass.
+# Set to false in environments that already have a default SC (e.g. local-path).
+nfs_storageclass_default: true
+nfs_wait_timeout: "300s"
+
+# --- NFS export options ---
+# Kubernetes pods typically run as root (uid 0). With root_squash, NFS maps
+# remote root to nobody — breaking PVC writes for PostgreSQL, model storage,
+# etc. no_root_squash is required for Kubernetes NFS volumes.
+nfs_export_options: "rw,sync,no_subtree_check,no_root_squash"
+
+# Permissions and ownership applied to the export directory on the NFS server.
+# 0775 + nogroup is sufficient for non-root pods; raise to 0777 only when
+# strictly necessary.
+nfs_dir_mode: "0775"
+nfs_dir_owner: "nobody"
+nfs_dir_group: "nogroup"
+
+# --- Validation knobs ---
+# When true, `validate.yaml` provisions a tiny PVC against nfs-client and
+# verifies it reaches Bound state, then deletes it.
+nfs_validate_pvc_bind: true
+nfs_validate_pvc_size: "100Mi"
+nfs_validate_pvc_namespace: "{{ nfs_provisioner_namespace }}"
+nfs_validate_pvc_timeout_seconds: 60

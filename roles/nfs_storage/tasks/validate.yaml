@@ -1,0 +1,122 @@
+---
+# =============================================================================
+# NFS Storage — Validate
+# =============================================================================
+
+- name: "nfs_storage | Check Helm release"
+  kubernetes.core.helm_info:
+    name: nfs-subdir-external-provisioner
+    release_namespace: "{{ nfs_provisioner_namespace }}"
+  register: _nfs_val_release
+  failed_when: false
+
+- name: "nfs_storage | Helm release present"
+  ansible.builtin.assert:
+    that: (_nfs_val_release.status | default({}) | length) > 0
+    success_msg: "NFS provisioner Helm release found"
+    fail_msg: "NFS provisioner Helm release NOT found in {{ nfs_provisioner_namespace }}"
+
+- name: "nfs_storage | Check provisioner pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ nfs_provisioner_namespace }}"
+    label_selectors:
+      - "app=nfs-subdir-external-provisioner"
+  register: _nfs_val_pods
+
+- name: "nfs_storage | Provisioner pod running"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_pods.resources | length > 0
+      - _nfs_val_pods.resources[0].status.phase == 'Running'
+    success_msg: "NFS provisioner pod is running"
+    fail_msg: "NFS provisioner pod is NOT running"
+
+- name: "nfs_storage | Check StorageClass"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ nfs_storageclass_name }}"
+  register: _nfs_val_sc
+
+- name: "nfs_storage | StorageClass exists"
+  ansible.builtin.assert:
+    that: _nfs_val_sc.resources | length > 0
+    success_msg: "StorageClass '{{ nfs_storageclass_name }}' exists"
+    fail_msg: "StorageClass '{{ nfs_storageclass_name }}' NOT found"
+
+# ── End-to-end smoke test: actually provision a PVC ───────────────────
+# This catches misconfigurations the resource checks above can't see:
+# nfs-server unreachable from worker, wrong export path, RBAC issues on the
+# provisioner SA, MountVolume.SetUp errors, etc.
+
+- name: "nfs_storage | PVC bind smoke test"
+  when: nfs_validate_pvc_bind | default(true) | bool
+  block:
+
+    - name: "nfs_storage | Create probe PVC"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: nfs-probe-pvc
+            namespace: "{{ nfs_validate_pvc_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: nfs_storage-role
+              app.kubernetes.io/component: probe
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: "{{ nfs_storageclass_name }}"
+            resources:
+              requests:
+                storage: "{{ nfs_validate_pvc_size }}"
+
+    - name: "nfs_storage | Wait for probe PVC to bind"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: nfs-probe-pvc
+        namespace: "{{ nfs_validate_pvc_namespace }}"
+      register: _nfs_probe_pvc
+      until:
+        - _nfs_probe_pvc.resources | length > 0
+        - _nfs_probe_pvc.resources[0].status.phase == 'Bound'
+      retries: "{{ ((nfs_validate_pvc_timeout_seconds | int) // 3) | int }}"
+      delay: 3
+      failed_when: false
+
+    - name: "nfs_storage | Cleanup probe PVC (always)"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: nfs-probe-pvc
+        namespace: "{{ nfs_validate_pvc_namespace }}"
+        wait: true
+        wait_timeout: 30
+      failed_when: false
+
+    - name: "nfs_storage | Probe PVC bound"
+      ansible.builtin.assert:
+        that:
+          - _nfs_probe_pvc.resources | length > 0
+          - _nfs_probe_pvc.resources[0].status.phase == 'Bound'
+        success_msg: "Probe PVC bound — dynamic provisioning works end-to-end"
+        fail_msg: >-
+          Probe PVC did NOT bind within {{ nfs_validate_pvc_timeout_seconds }}s.
+          The provisioner pod is running but cannot create PVs. Check the
+          provisioner logs (kubectl logs -n {{ nfs_provisioner_namespace }}
+          -l app=nfs-subdir-external-provisioner) and verify NFS server
+          {{ nfs_server }}:{{ nfs_path }} is reachable from worker nodes.
+
+- name: "nfs_storage | Validation summary"
+  ansible.builtin.debug:
+    msg:
+      - "NFS Storage validation PASSED"
+      - "  Provisioner: running in {{ nfs_provisioner_namespace }}"
+      - "  StorageClass: {{ nfs_storageclass_name }}"
+      - "  NFS Server:   {{ nfs_server }}:{{ nfs_path }}"
+      - "  PVC bind:     {{ 'verified' if (nfs_validate_pvc_bind | default(true) | bool) else 'skipped' }}"

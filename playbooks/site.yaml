@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Master Install Playbook - Dynamically includes roles from components.yaml
+# =============================================================================
+# Usage:
+#   ansible-playbook playbooks/site.yaml                       # all components
+#   ansible-playbook playbooks/site.yaml -e target=kserve      # specific component
+#   ansible-playbook playbooks/site.yaml -e target=platform    # tag group
+#   ansible-playbook playbooks/site.yaml -e key=value          # override vars
+# =============================================================================
+
+- name: "Platform Installation"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    component_action: install
+    target: all
+    # Shared vars for application-layer roles dispatched via site.yaml
+    log_dir: "{{ env_dir | default(playbook_dir + '/../env/local') }}/logs"
+    tmp_dir: "{{ log_dir }}/tmp"
+    secure_logs: false
+    helm_timeout: "600s"
+    helm_wait: true
+    helm_retries: 3
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    NO_PROXY: "{{ no_proxy | default('') }}"
+    K8S_AUTH_NO_PROXY: "{{ no_proxy | default('') }}"
+
+  pre_tasks:
+    - name: "Preflight"
+      ansible.builtin.include_tasks: includes/preflight.yaml
+
+  tasks:
+    - name: "Execute components"
+      ansible.builtin.include_tasks: includes/run_component.yaml
+      loop: "{{ _active_components }}"
+      loop_control:
+        label: "{{ component.name }}"
+        loop_var: component

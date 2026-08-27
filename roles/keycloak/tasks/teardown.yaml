@@ -1,0 +1,72 @@
+---
+# =============================================================================
+# Keycloak — Teardown
+# =============================================================================
+
+- name: "keycloak | Check if Keycloak CRD exists"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: keycloaks.k8s.keycloak.org
+  register: _kc_crd
+  failed_when: false
+
+- name: "keycloak | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "Keycloak CRD not found. Nothing to tear down."
+  when: (_kc_crd.resources | default([])) | length == 0
+
+- name: "keycloak | Teardown"
+  when: (_kc_crd.resources | default([])) | length > 0
+  block:
+    - name: "keycloak | Delete SecurityPolicy (no-auth)"
+      kubernetes.core.k8s:
+        api_version: gateway.envoyproxy.io/v1alpha1
+        kind: SecurityPolicy
+        name: keycloak-no-auth
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "keycloak | Delete HTTPRoute"
+      kubernetes.core.k8s:
+        api_version: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "keycloak | Delete Keycloak CR"
+      kubernetes.core.k8s:
+        api_version: k8s.keycloak.org/v2beta1
+        kind: Keycloak
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "keycloak | Delete Keycloak Operator"
+      kubernetes.core.k8s:
+        src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "keycloak | Delete Keycloak CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - keycloaks.k8s.keycloak.org
+        - keycloakrealmimports.k8s.keycloak.org
+      failed_when: false
+
+    - name: "keycloak | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ keycloak_namespace }}"
+        state: absent
+      failed_when: false

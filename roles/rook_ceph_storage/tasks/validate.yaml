@@ -1,0 +1,189 @@
+---
+# =============================================================================
+# Rook-Ceph Storage — Validate
+# =============================================================================
+# Checks:
+#   1. CephCluster health is HEALTH_OK/HEALTH_WARN
+#   2. OSDs are actually up — HEALTH_WARN passes with zero OSDs, so check separately
+#   3. StorageClass exists and is default
+#   4. Test PVC binds successfully (optional, controlled by rook_ceph_validate_pvc_bind)
+# =============================================================================
+
+- name: "rook_ceph | validate | Check CephCluster health"
+  kubernetes.core.k8s_info:
+    api_version: ceph.rook.io/v1
+    kind: CephCluster
+    name: rook-ceph
+    namespace: "{{ rook_ceph_operator_namespace }}"
+  register: _rook_validate_cluster
+
+- name: "rook_ceph | validate | Assert cluster exists"
+  ansible.builtin.assert:
+    that:
+      - _rook_validate_cluster.resources | length > 0
+    fail_msg: "CephCluster 'rook-ceph' not found in namespace '{{ rook_ceph_operator_namespace }}'"
+
+- name: "rook_ceph | validate | Assert cluster healthy"
+  ansible.builtin.assert:
+    that:
+      - _rook_validate_cluster.resources[0].status.ceph.health | default('') in ['HEALTH_OK', 'HEALTH_WARN']
+    fail_msg: >-
+      CephCluster health: {{ _rook_validate_cluster.resources[0].status.ceph.health | default('UNKNOWN') }}.
+      Expected HEALTH_OK or HEALTH_WARN.
+      Details: {{ _rook_validate_cluster.resources[0].status.ceph.details | default({}) }}
+
+# ─── OSDs up ────────────────────────────────────────────────────────────────
+# HEALTH_WARN is reported for a cluster with zero OSDs, so health alone proves
+# nothing. num_up_osds only exists in `ceph status`; the CephCluster status has
+# no OSD counters. Without the toolbox, fall back to ready OSD deployments.
+
+- name: "rook_ceph | validate | Read OSD count via toolbox"
+  when: rook_ceph_toolbox_enabled | bool
+  block:
+    - name: "rook_ceph | validate | Find Running toolbox pod"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ rook_ceph_operator_namespace }}"
+        label_selectors:
+          - app=rook-ceph-tools
+      register: _rook_toolbox_pods
+
+    - name: "rook_ceph | validate | Pick toolbox pod"
+      ansible.builtin.set_fact:
+        _rook_toolbox_pod: >-
+          {{ (_rook_toolbox_pods.resources | default([])
+              | selectattr('status.phase', 'equalto', 'Running')
+              | rejectattr('metadata.deletionTimestamp', 'defined')
+              | map(attribute='metadata.name') | first) | default('', true) }}
+
+    - name: "rook_ceph | validate | Assert toolbox pod is Running"
+      ansible.builtin.assert:
+        that:
+          - _rook_toolbox_pod | length > 0
+        fail_msg: >-
+          No Running rook-ceph-tools pod in '{{ rook_ceph_operator_namespace }}'.
+          The toolbox is enabled but not up — cannot query OSD state.
+
+    - name: "rook_ceph | validate | Run ceph status"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ rook_ceph_operator_namespace }}"
+        pod: "{{ _rook_toolbox_pod }}"
+        command: ceph status --format json
+      register: _rook_ceph_status
+      changed_when: false
+
+- name: "rook_ceph | validate | Count ready OSD deployments (toolbox disabled)"
+  when: not (rook_ceph_toolbox_enabled | bool)
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ rook_ceph_operator_namespace }}"
+    label_selectors:
+      - app=rook-ceph-osd
+  register: _rook_osd_deploys
+
+- name: "rook_ceph | validate | Set OSD up count"
+  ansible.builtin.set_fact:
+    _rook_up_osds: >-
+      {{ (_rook_ceph_status.stdout | from_json).osdmap.num_up_osds
+         if (rook_ceph_toolbox_enabled | bool)
+         else (_rook_osd_deploys.resources | default([])
+               | selectattr('status.readyReplicas', 'defined')
+               | selectattr('status.readyReplicas', 'ge', 1) | list | length) }}
+
+- name: "rook_ceph | validate | Assert OSDs are up"
+  ansible.builtin.assert:
+    that:
+      - (_rook_up_osds | int) >= (rook_ceph_validate_min_up_osds | int)
+    fail_msg: >-
+      Only {{ _rook_up_osds }} OSD(s) up, need {{ rook_ceph_validate_min_up_osds }}.
+      A cluster with no OSDs reports HEALTH_WARN but cannot serve any PVC.
+      Check that rook_ceph_devices lists real, unused block devices and that the
+      OSD prepare jobs succeeded in namespace '{{ rook_ceph_operator_namespace }}'.
+    success_msg: "OSDs up: {{ _rook_up_osds }}"
+
+- name: "rook_ceph | validate | Check StorageClass"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ rook_ceph_rbd_storage_class }}"
+  register: _rook_validate_sc
+
+- name: "rook_ceph | validate | Assert StorageClass exists"
+  ansible.builtin.assert:
+    that:
+      - _rook_validate_sc.resources | length > 0
+    fail_msg: "StorageClass '{{ rook_ceph_rbd_storage_class }}' not found"
+
+- name: "rook_ceph | validate | Check CephFS StorageClass"
+  when: rook_ceph_fs_enabled | bool
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ rook_ceph_fs_storage_class }}"
+  register: _rook_validate_fs_sc
+
+- name: "rook_ceph | validate | Assert CephFS StorageClass exists"
+  when: rook_ceph_fs_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - _rook_validate_fs_sc.resources | length > 0
+    fail_msg: "StorageClass '{{ rook_ceph_fs_storage_class }}' not found (CephFS enabled but SC missing)"
+
+# ─── Test PVC bind ──────────────────────────────────────────────────────────
+
+- name: "rook_ceph | validate | Test PVC bind"
+  when: rook_ceph_validate_pvc_bind | bool
+  block:
+    - name: "rook_ceph | validate | Create test PVC (RWO)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: rook-ceph-test-pvc
+            namespace: "{{ rook_ceph_validate_pvc_namespace }}"
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: "{{ rook_ceph_rbd_storage_class }}"
+            resources:
+              requests:
+                storage: "{{ rook_ceph_validate_pvc_size }}"
+
+    - name: "rook_ceph | validate | Wait for test PVC to bind"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: rook-ceph-test-pvc
+        namespace: "{{ rook_ceph_validate_pvc_namespace }}"
+      register: _rook_test_pvc
+      until:
+        - _rook_test_pvc.resources | length > 0
+        - _rook_test_pvc.resources[0].status.phase | default('') == 'Bound'
+      retries: "{{ (rook_ceph_validate_pvc_timeout_seconds / 5) | int }}"
+      delay: 5
+
+    - name: "rook_ceph | validate | Test PVC bound successfully"
+      ansible.builtin.debug:
+        msg: "Test PVC bound to {{ _rook_test_pvc.resources[0].spec.volumeName }}"
+
+  always:
+    - name: "rook_ceph | validate | Cleanup test PVC"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: rook-ceph-test-pvc
+        namespace: "{{ rook_ceph_validate_pvc_namespace }}"
+      failed_when: false
+
+- name: "rook_ceph | validate | ━━━ PASS ━━━"
+  ansible.builtin.debug:
+    msg:
+      - "Rook-Ceph validation passed."
+      - "  Health: {{ _rook_validate_cluster.resources[0].status.ceph.health }}"
+      - "  OSDs up: {{ _rook_up_osds }}"
+      - "  Block SC: {{ rook_ceph_rbd_storage_class }} ✓"
+      - "  FS SC: {{ rook_ceph_fs_storage_class }} {{ '✓' if rook_ceph_fs_enabled else '(disabled)' }}"

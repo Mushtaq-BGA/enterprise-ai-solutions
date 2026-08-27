@@ -1,0 +1,18 @@
+---
+- name: "postgresql | Validate CNPG Cluster readiness"
+  kubernetes.core.k8s_info:
+    api_version: postgresql.cnpg.io/v1
+    kind: Cluster
+    name: "{{ postgresql_cluster_name }}"
+    namespace: "{{ postgresql_namespace }}"
+  register: _pg_cluster
+  failed_when: >-
+    (_pg_cluster.resources | default([]) | length) == 0 or
+    (_pg_cluster.resources[0].status.conditions | default([])
+      | selectattr('type', 'eq', 'Ready')
+      | selectattr('status', 'eq', 'True')
+      | list | length) == 0
+
+- name: "postgresql | PostgreSQL is ready"
+  ansible.builtin.debug:
+    msg: "PostgreSQL running in {{ postgresql_namespace }}."

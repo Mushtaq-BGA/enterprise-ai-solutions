@@ -1,0 +1,393 @@
+---
+# =============================================================================
+# Rook-Ceph Storage — Install
+# =============================================================================
+# 1. Preflight checks (node count, device map)
+# 2. Label OSD nodes type=storage-node (Ceph daemons have required affinity on it)
+# 3. Helm install Rook operator
+# 4. Apply CephCluster CRD (topology-aware)
+# 5. Wait for HEALTH_OK
+# 6. Apply CephBlockPool + CephFilesystem + toolbox
+# 7. Apply StorageClasses (mark default)
+# =============================================================================
+
+# ─── Resolve topology ──────────────────────────────────────────────────────
+
+- name: "rook_ceph | Count cluster nodes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _rook_nodes
+
+# Ceph daemons are pinned to storage nodes by nodeAffinity, so mon/mgr counts and
+# replica size must derive from the storage-node count — not the cluster size.
+# Sizing off all nodes would place 3 mons on 2 allowed nodes (one stuck Pending)
+# and set replica size above the number of failure domains (PGs never active+clean).
+- name: "rook_ceph | Set topology facts"
+  ansible.builtin.set_fact:
+    _rook_node_count: "{{ _rook_nodes.resources | length }}"
+    _rook_node_names: "{{ _rook_nodes.resources | map(attribute='metadata.name') | list }}"
+    _rook_storage_node_count: "{{ rook_ceph_devices | length }}"
+    _rook_replica_count: >-
+      {%- if rook_ceph_replica_count == 'auto' -%}
+        {{ [(rook_ceph_devices | length), 3] | min }}
+      {%- else -%}
+        {{ rook_ceph_replica_count }}
+      {%- endif -%}
+
+- name: "rook_ceph | Display topology"
+  ansible.builtin.debug:
+    msg:
+      - "Nodes: {{ _rook_node_count }} ({{ _rook_node_names | join(', ') }})"
+      - "Storage nodes: {{ _rook_storage_node_count }} ({{ rook_ceph_devices.keys() | list | join(', ') }})"
+      - "Replica count: {{ _rook_replica_count | trim }}"
+      - "CephFS enabled: {{ rook_ceph_fs_enabled }}"
+
+# ─── Preflight assertions ──────────────────────────────────────────────────
+
+- name: "rook_ceph | Assert device map is set"
+  ansible.builtin.assert:
+    that:
+      - rook_ceph_devices | length > 0
+    fail_msg: >-
+      rook_ceph_devices is empty — Rook would create 0 OSDs and the cluster would
+      never become healthy. Set a per-node raw device map in global_config.yaml:
+        rook_ceph_devices:
+          <node-name>: [/dev/nvme1n1]
+
+- name: "rook_ceph | Assert minimum storage node count"
+  ansible.builtin.assert:
+    that:
+      - (_rook_storage_node_count | int) >= 2
+    fail_msg: >-
+      Rook-Ceph requires at least 2 storage nodes (entries in rook_ceph_devices).
+      Found {{ _rook_storage_node_count }}.
+      Use storage_backend: local-path for single-node clusters.
+
+- name: "rook_ceph | Assert every storage node has at least one device"
+  ansible.builtin.assert:
+    that:
+      - _rook_empty_nodes | length == 0
+    fail_msg: >-
+      Every storage node needs at least one device, but these have none:
+      {{ _rook_empty_nodes | join(', ') }}.
+    quiet: true
+  vars:
+    _rook_empty_nodes: >-
+      {{ rook_ceph_devices | dict2items | rejectattr('value')
+         | map(attribute='key') | list }}
+
+- name: "rook_ceph | Assert storage nodes exist in the cluster"
+  ansible.builtin.assert:
+    that:
+      - (rook_ceph_devices.keys() | list | difference(_rook_node_names)) | length == 0
+    fail_msg: >-
+      rook_ceph_devices names nodes that are not in the cluster:
+      {{ rook_ceph_devices.keys() | list | difference(_rook_node_names) | join(', ') }}.
+      Known nodes: {{ _rook_node_names | join(', ') }}.
+
+- name: "rook_ceph | Assert device paths are absolute /dev entries"
+  ansible.builtin.assert:
+    that:
+      - _rook_bad_devices | length == 0
+    fail_msg: >-
+      rook_ceph_devices contains paths that are not plain absolute /dev entries:
+      {{ _rook_bad_devices | join(', ') }}.
+      Use the path as it appears in lsblk, e.g. /dev/nvme1n1.
+    quiet: true
+  vars:
+    _rook_bad_devices: >-
+      {{ rook_ceph_devices | dict2items | subelements('value') | map(attribute='1')
+         | reject('match', '^/dev/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9/_.-]*$') | list }}
+
+# The device map is authoritative — Ceph needs per-node device paths, which an
+# inventory group cannot express. Where the optional storage_nodes group exists,
+# a mismatch means the two disagree about the storage tier; warn rather than fail
+# since BYO-cluster runs have no inventory group at all.
+- name: "rook_ceph | Warn when storage_nodes group disagrees with rook_ceph_devices"
+  ansible.builtin.debug:
+    msg: >-
+      Inventory group storage_nodes ({{ groups['storage_nodes'] | join(', ') }})
+      does not match rook_ceph_devices ({{ rook_ceph_devices.keys() | list | join(', ') }}).
+      rook_ceph_devices wins — only its nodes get labelled and run OSDs.
+  when:
+    - groups['storage_nodes'] | default([]) | length > 0
+    - (groups['storage_nodes'] | symmetric_difference(rook_ceph_devices.keys() | list)) | length > 0
+
+# ─── Label storage nodes ───────────────────────────────────────────────────
+# Must precede the CephCluster — every daemon has required nodeAffinity on this
+# label, so applying the CR first leaves mons Pending until the labels land.
+
+- name: "rook_ceph | Label OSD nodes {{ rook_ceph_storage_node_label_key }}={{ rook_ceph_storage_node_label_value }}"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item }}"
+    definition:
+      metadata:
+        labels: "{{ dict([[rook_ceph_storage_node_label_key, rook_ceph_storage_node_label_value]]) }}"
+  loop: "{{ rook_ceph_devices.keys() | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+
+# ─── Check if already installed ────────────────────────────────────────────
+
+- name: "rook_ceph | Check for existing operator Helm release"
+  kubernetes.core.helm_info:
+    name: rook-ceph
+    release_namespace: "{{ rook_ceph_operator_namespace }}"
+  register: _rook_operator_existing
+  failed_when: false
+
+- name: "rook_ceph | Check for existing CephCluster"
+  kubernetes.core.k8s_info:
+    api_version: ceph.rook.io/v1
+    kind: CephCluster
+    name: rook-ceph
+    namespace: "{{ rook_ceph_operator_namespace }}"
+  register: _rook_cluster_existing
+  failed_when: false
+
+- name: "rook_ceph | Check StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ rook_ceph_rbd_storage_class }}"
+  register: _rook_sc_existing
+  failed_when: false
+
+- name: "rook_ceph | Set presence facts"
+  ansible.builtin.set_fact:
+    _rook_operator_present: "{{ (_rook_operator_existing.status | default({})) | length > 0 }}"
+    _rook_cluster_present: "{{ (_rook_cluster_existing.resources | default([])) | length > 0 }}"
+    _rook_sc_present: "{{ (_rook_sc_existing.resources | default([])) | length > 0 }}"
+
+- name: "rook_ceph | Already fully installed — skip"
+  when:
+    - _rook_operator_present | bool
+    - _rook_cluster_present | bool
+    - _rook_sc_present | bool
+  ansible.builtin.debug:
+    msg: "Rook-Ceph already present (operator + cluster + StorageClass). Skipping."
+
+# ─── Install Rook Operator (Helm) ─────────────────────────────────────────
+
+- name: "rook_ceph | Install"
+  when: not (_rook_operator_present | bool and _rook_cluster_present | bool and _rook_sc_present | bool)
+  block:
+
+    - name: "rook_ceph | ━━━ BEGIN: Rook-Ceph ━━━"
+      ansible.builtin.debug:
+        msg: "Installing Rook-Ceph operator and cluster..."
+
+    - name: "rook_ceph | Add Helm repo"
+      kubernetes.core.helm_repository:
+        name: rook-release
+        repo_url: "{{ rook_ceph_operator_chart_repo }}"
+
+    - name: "rook_ceph | Install Rook operator"
+      when: not (_rook_operator_present | bool)
+      kubernetes.core.helm:
+        name: rook-ceph
+        chart_ref: rook-release/rook-ceph
+        release_namespace: "{{ rook_ceph_operator_namespace }}"
+        create_namespace: true
+        chart_version: "v{{ rook_ceph_operator_chart_version }}"
+        wait: true
+        timeout: "{{ rook_ceph_operator_wait_timeout }}"
+        values:
+          tolerations:
+            - operator: Exists
+
+    - name: "rook_ceph | Wait for operator deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: rook-ceph-operator
+        namespace: "{{ rook_ceph_operator_namespace }}"
+      register: _rook_operator_deploy
+      until:
+        - _rook_operator_deploy.resources | length > 0
+        - (_rook_operator_deploy.resources[0].status.conditions | default([])
+            | selectattr('type', 'eq', 'Available')
+            | selectattr('status', 'eq', 'True') | list | length > 0)
+      retries: 60
+      delay: 5
+
+    # ── Apply CephCluster CRD ──────────────────────────────────────────────
+
+    - name: "rook_ceph | Apply CephCluster"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ceph-cluster.yaml.j2') | from_yaml }}"
+
+    - name: "rook_ceph | Wait for CephCluster health"
+      block:
+        - name: "rook_ceph | Poll CephCluster until healthy"
+          kubernetes.core.k8s_info:
+            api_version: ceph.rook.io/v1
+            kind: CephCluster
+            name: rook-ceph
+            namespace: "{{ rook_ceph_operator_namespace }}"
+          register: _rook_cluster_status
+          until:
+            - _rook_cluster_status.resources | length > 0
+            - >-
+              (_rook_cluster_status.resources[0].status.ceph.health | default(''))
+              in ['HEALTH_OK', 'HEALTH_WARN']
+              or (_rook_cluster_status.resources[0].status.phase | default('')) == 'Ready'
+          retries: "{{ rook_ceph_cluster_health_retries }}"
+          delay: "{{ rook_ceph_cluster_health_delay }}"
+      rescue:
+        - name: "rook_ceph | DIAG — CephCluster status at failure"
+          ansible.builtin.debug:
+            msg:
+              - "phase: {{ (_rook_cluster_status.resources[0].status.phase | default('unknown')) }}"
+              - "message: {{ (_rook_cluster_status.resources[0].status.message | default('none')) }}"
+              - "health: {{ (_rook_cluster_status.resources[0].status.ceph | default({})) }}"
+
+        - name: "rook_ceph | DIAG — Pods in rook-ceph namespace"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ rook_ceph_operator_namespace }}"
+          register: _rook_diag_pods
+
+        - name: "rook_ceph | DIAG — Pod status summary"
+          ansible.builtin.debug:
+            msg: >-
+              {{ item.metadata.name }}:
+              phase={{ item.status.phase | default('?') }},
+              ready={{ (item.status.containerStatuses | default([]) | selectattr('ready', 'eq', true) | list | length) }}/{{ (item.status.containerStatuses | default([]) | length) }}
+              {%- if (item.status.containerStatuses | default([]) | selectattr('state.waiting', 'defined') | list | length) > 0 -%}
+              , waiting={{ (item.status.containerStatuses | selectattr('state.waiting', 'defined') | map(attribute='state.waiting.reason') | list | join(',')) }}
+              {%- endif -%}
+          loop: "{{ _rook_diag_pods.resources | default([]) }}"
+          loop_control:
+            label: "{{ item.metadata.name }}"
+
+        - name: "rook_ceph | Health check failed"
+          ansible.builtin.fail:
+            msg: >-
+              CephCluster did not reach HEALTH_OK/HEALTH_WARN within
+              {{ rook_ceph_cluster_health_retries | int * rook_ceph_cluster_health_delay | int }}s.
+              Check pod status above — common causes: image pull failure (proxy),
+              nodes can't communicate (firewall), or disks are in use/partitioned.
+
+    - name: "rook_ceph | Cluster health status"
+      ansible.builtin.debug:
+        msg: >-
+          CephCluster phase={{ _rook_cluster_status.resources[0].status.phase | default('unknown') }},
+          health={{ _rook_cluster_status.resources[0].status.ceph.health | default('unknown') }},
+          message={{ _rook_cluster_status.resources[0].status.message | default('') }}
+
+    # ── Apply toolbox (in-cluster ceph CLI) ────────────────────────────────
+
+    - name: "rook_ceph | Apply Ceph toolbox"
+      when: rook_ceph_toolbox_enabled | bool
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ceph-toolbox.yaml.j2') | from_yaml }}"
+
+    - name: "rook_ceph | Wait for toolbox deployment"
+      when: rook_ceph_toolbox_enabled | bool
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: rook-ceph-tools
+        namespace: "{{ rook_ceph_operator_namespace }}"
+      register: _rook_toolbox_deploy
+      until:
+        - _rook_toolbox_deploy.resources | length > 0
+        - (_rook_toolbox_deploy.resources[0].status.readyReplicas | default(0)) > 0
+      retries: 30
+      delay: 5
+
+    # ── Apply CephBlockPool ────────────────────────────────────────────────
+
+    - name: "rook_ceph | Apply CephBlockPool"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ceph-block-pool.yaml.j2') | from_yaml }}"
+
+    # ── Apply CephFilesystem (RWX for model datalake) ──────────────────────
+
+    - name: "rook_ceph | Apply CephFilesystem"
+      when: rook_ceph_fs_enabled | bool
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'ceph-filesystem.yaml.j2') | from_yaml }}"
+
+    - name: "rook_ceph | Wait for CephFilesystem MDS"
+      when: rook_ceph_fs_enabled | bool
+      kubernetes.core.k8s_info:
+        api_version: ceph.rook.io/v1
+        kind: CephFilesystem
+        name: "{{ rook_ceph_filesystem_name }}"
+        namespace: "{{ rook_ceph_operator_namespace }}"
+      register: _rook_fs_status
+      until:
+        - _rook_fs_status.resources | length > 0
+        - (_rook_fs_status.resources[0].status.phase | default('')) == 'Ready'
+      retries: 60
+      delay: 10
+
+    # ── Apply StorageClasses ───────────────────────────────────────────────
+
+    - name: "rook_ceph | Apply StorageClasses"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'storage-classes.yaml.j2') | from_yaml_all }}"
+
+    # ── Remove default annotation from other StorageClasses ────────────────
+
+    - name: "rook_ceph | List existing StorageClasses"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+      register: _rook_all_sc
+
+    - name: "rook_ceph | Remove default annotation from other StorageClasses"
+      kubernetes.core.k8s:
+        state: present
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ item.metadata.name }}"
+        definition:
+          metadata:
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "false"
+      loop: >-
+        {{ _rook_all_sc.resources | default([])
+            | selectattr('metadata.annotations', 'defined')
+            | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'defined')
+            | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'eq', 'true')
+            | rejectattr('metadata.name', 'eq', rook_ceph_default_storage_class)
+            | list }}
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when: item | length > 0
+
+    # ── Verify ─────────────────────────────────────────────────────────────
+
+    - name: "rook_ceph | Verify StorageClass created"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ rook_ceph_rbd_storage_class }}"
+      register: _rook_sc_verify
+      until: _rook_sc_verify.resources | length > 0
+      retries: 10
+      delay: 3
+
+    - name: "rook_ceph | ━━━ DONE: Rook-Ceph ━━━"
+      ansible.builtin.debug:
+        msg:
+          - "Rook-Ceph installed successfully."
+          - "  Nodes: {{ _rook_node_count }} (replicas: {{ _rook_replica_count | trim }})"
+          - "  Storage nodes: {{ rook_ceph_devices.keys() | list | join(', ') }}"
+          - "  Block SC: {{ rook_ceph_rbd_storage_class }} (default={{ rook_ceph_default_storage_class == rook_ceph_rbd_storage_class }})"
+          - "  FS SC: {{ rook_ceph_fs_storage_class }} (enabled={{ rook_ceph_fs_enabled }})"
+          - "  Namespace: {{ rook_ceph_operator_namespace }}"
+          - "  Toolbox: {{ 'kubectl -n ' ~ rook_ceph_operator_namespace ~ ' exec -it deploy/rook-ceph-tools -- ceph status' if rook_ceph_toolbox_enabled else '(disabled)' }}"

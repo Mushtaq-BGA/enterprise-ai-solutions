@@ -1,0 +1,108 @@
+---
+# =============================================================================
+# Kubernetes Precheck — System prerequisites before cluster installation
+# =============================================================================
+
+- name: "kubernetes | precheck | Gather OS facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - '!all'
+      - distribution
+      - os_family
+      - kernel
+
+- name: "kubernetes | precheck | Display system info"
+  ansible.builtin.debug:
+    msg:
+      - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+      - "Kernel: {{ ansible_facts['kernel'] }}"
+      - "Architecture: {{ ansible_facts['architecture'] }}"
+
+- name: "kubernetes | precheck | Validate supported OS"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] in ['Debian', 'RedHat']
+    fail_msg: "Unsupported OS family: {{ ansible_facts['os_family'] }}. Supported: Debian (Ubuntu), RedHat (RHEL/Rocky)."
+    success_msg: "OS family {{ ansible_facts['os_family'] }} is supported."
+
+- name: "kubernetes | precheck | Disable swap"
+  when: kubernetes_disable_swap
+  become: true
+  block:
+    - name: "kubernetes | precheck | Turn off swap"
+      ansible.builtin.command:
+        cmd: swapoff -a
+      changed_when: true
+
+    - name: "kubernetes | precheck | Remove swap from fstab"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '\sswap\s'
+        state: absent
+
+- name: "kubernetes | precheck | Load required kernel modules"
+  when: kubernetes_load_kernel_modules
+  become: true
+  block:
+    - name: "kubernetes | precheck | Ensure kernel modules are loaded"
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+      failed_when: false
+
+    - name: "kubernetes | precheck | Persist kernel modules"
+      ansible.builtin.copy:
+        content: |
+          br_netfilter
+          overlay
+        dest: /etc/modules-load.d/kubernetes.conf
+        mode: '0644'
+
+    - name: "kubernetes | precheck | Set sysctl parameters"
+      ansible.builtin.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+        reload: true
+      loop:
+        - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { key: "net.ipv4.ip_forward", value: "1" }
+
+- name: "kubernetes | precheck | Install required packages"
+  become: true
+  ansible.builtin.package:
+    name:
+      - curl
+      - tar
+      - git
+      - python3-pip
+      - python3-venv
+      - sshpass
+    state: present
+
+- name: "kubernetes | precheck | Verify system resources"
+  block:
+    - name: "kubernetes | precheck | Gather system facts"
+      ansible.builtin.setup:
+        filter:
+          - ansible_memtotal_mb
+          - ansible_mounts
+
+    - name: "kubernetes | precheck | Display resources"
+      ansible.builtin.debug:
+        msg:
+          - "Memory: {{ ansible_memtotal_mb }}MB"
+          - "Disk (root): {{ (ansible_mounts | selectattr('mount', 'equalto', '/') | first).size_available // (1024**3) }}GB free"
+
+    - name: "kubernetes | precheck | Warn if low resources"
+      ansible.builtin.debug:
+        msg: "WARNING: Less than 4GB RAM detected. Kubernetes may be unstable."
+      when: ansible_memtotal_mb | int < 4096
+
+- name: "kubernetes | precheck | System prerequisites complete"
+  ansible.builtin.debug:
+    msg: "All system prerequisites verified."

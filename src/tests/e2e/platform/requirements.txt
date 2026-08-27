@@ -1,0 +1,4 @@
+kr8s==0.20.15 # BSD 3-Clause License
+pytest==9.0.3 # MIT
+allure-pytest==2.15.3 # Apache 2.0
+pytest-timeout==2.4.0 # MIT

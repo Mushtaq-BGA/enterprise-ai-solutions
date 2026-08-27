@@ -1,0 +1,104 @@
+---
+# =============================================================================
+# Component Registry — Single source of truth for all components
+# =============================================================================
+# Layers define execution order and dependencies between groups.
+# Components define individual units within a layer.
+#
+# To add a new layer:
+#   1. Add an entry under 'layers' (with its dependencies)
+#   2. Create playbooks/<layer>.yaml
+#   That's it — es_auto_installer.sh reads layer order from this file.
+#
+# To add a new component:
+#   1. Add an entry under 'components' (after its same-layer dependencies)
+#   2. Create the role in roles/<name>/
+#   3. Add <name>_enabled: true to global_config.yaml
+#   Playbooks and es_auto_installer.sh read this file automatically.
+#
+# Component depends_on only needs SAME-LAYER dependencies.
+# Cross-layer dependencies are handled automatically via layer ordering.
+# =============================================================================
+
+layers:
+  - name: infrastructure
+    enabled: true
+    depends_on: []
+  - name: platform
+    enabled: true
+    depends_on: [infrastructure]
+  - name: inference
+    enabled: true
+    depends_on: [platform]
+  - name: application
+    enabled: false                  # opt-in via an ext solution repo
+    depends_on: [platform,inference]
+  # Future layers — just add here:
+
+components:
+  # --- Infrastructure ---
+  - name: kubernetes
+    layer: infrastructure
+    enabled: true
+    depends_on: []
+
+  - name: storage
+    layer: infrastructure
+    enabled: true
+    depends_on: [kubernetes]
+
+  # --- Platform ---
+  - name: cert_manager
+    layer: platform
+    enabled: "{{ cert_manager_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: istio
+    layer: platform
+    enabled: "{{ istio_enabled | default(true) | bool }}"
+    depends_on: [cert_manager]
+
+  - name: metallb
+    layer: platform
+    enabled: "{{ metallb_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: envoy_gateway
+    layer: platform
+    enabled: "{{ envoy_gateway_enabled | default(true) | bool }}"
+    depends_on: [cert_manager, metallb]
+
+  - name: postgresql
+    layer: platform
+    enabled: "{{ postgresql_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: keycloak
+    layer: platform
+    enabled: "{{ keycloak_enabled | default(auth_provider | default('keycloak') != 'litellm') | bool }}"
+    depends_on: [cert_manager, envoy_gateway, postgresql]
+
+  - name: object_store
+    layer: platform
+    enabled: true
+    depends_on: []
+
+  - name: minio
+    layer: platform
+    enabled: "{{ (object_store_backend | default('minio')) == 'minio' }}"
+    depends_on: [object_store]
+
+  - name: observability
+    layer: platform
+    enabled: "{{ observability_enabled | default(true) | bool }}"
+    depends_on: [cert_manager, metallb, minio]
+
+  # --- Inference ---
+  # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy
+  # and is tightly coupled to the kubernetes role. All other inference components
+  # are registered in ext/enterprise.ai-inference/components.yaml.
+  - name: nri_cpu_balloons
+    layer: inference
+    enabled: "{{ (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons' and (kubernetes_accelerator | default('cpu')) == 'cpu' }}"
+    depends_on: []
+

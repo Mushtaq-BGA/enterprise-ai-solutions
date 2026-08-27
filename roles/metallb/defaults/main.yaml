@@ -1,0 +1,39 @@
+---
+# =============================================================================
+# MetalLB Role Defaults
+# =============================================================================
+
+metallb_version: "0.15.3"
+metallb_namespace: "metallb-system"
+metallb_helm_repo: "https://metallb.github.io/metallb"
+metallb_wait_timeout: "300s"
+
+# L2 mode IP pool — intelligent auto-detection (recommended: leave empty)
+#
+# Auto-detect inspects the running kube-proxy mode and picks accordingly:
+#
+#   kube-proxy = nftables/iptables (default):
+#     Single-node  → node IP/32
+#     Multi-node   → master IP/32   (safe — no kube-ipvs0 collision)
+#
+#   kube-proxy = ipvs (legacy):
+#     Single-node  → node IP/32
+#     Multi-node   → .240-.250 range (must NOT equal any node IP; requires
+#                   NAT at network edge for external access)
+#
+# Why the kube-proxy mode matters:
+#   In IPVS mode, kube-proxy binds every LoadBalancer external IP to a
+#   kube-ipvs0 dummy interface on EVERY node. A pool IP matching a real
+#   node IP causes that node's kernel to hijack the IP locally — peer
+#   nodes can no longer reach it (Connection refused / NotReady cascade).
+#   nftables/iptables modes don't create kube-ipvs0, so node IPs are safe.
+#
+# Override in nodes.yaml or global_config.yaml for:
+#   - Dedicated VIP subnet (production best practice): "10.1.2.1-10.1.2.14"
+#   - Public IPs on interface:                          "203.0.113.50/32"
+metallb_ip_range: ""
+metallb_pool_name: "default-pool"
+
+# Set to "cloud" to skip MetalLB (cloud LB handles it)
+# Set to "metallb" to install MetalLB (bare-metal)
+load_balancer_type: "metallb"

@@ -1,0 +1,180 @@
+---
+# =============================================================================
+# Observability — Teardown
+# Removes in reverse install order: OTel Collector → Tempo → Loki → kube-prometheus-stack
+# =============================================================================
+
+- name: "observability | Check if any release exists"
+  kubernetes.core.helm_info:
+    name: kube-prometheus-stack
+    release_namespace: "{{ observability_namespace }}"
+  register: _obs_prom_check
+  failed_when: false
+
+- name: "observability | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "No observability stack found in {{ observability_namespace }}. Nothing to tear down."
+  when: _obs_prom_check.status is not defined
+
+- name: "observability | Teardown"
+  when: _obs_prom_check.status is defined
+  block:
+    # ── Prometheus Adapter (must go first — owns the custom.metrics APIService) ─
+
+    - name: "observability | Check Prometheus Adapter release"
+      kubernetes.core.helm_info:
+        name: prometheus-adapter
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_prom_adapter_check
+      failed_when: false
+
+    - name: "observability | Uninstall Prometheus Adapter"
+      kubernetes.core.helm:
+        name: prometheus-adapter
+        release_namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+      when: _obs_prom_adapter_check.status is defined
+
+    - name: "observability | Delete orphaned custom.metrics APIService"
+      kubernetes.core.k8s:
+        api_version: apiregistration.k8s.io/v1
+        kind: APIService
+        name: v1beta1.custom.metrics.k8s.io
+        state: absent
+      failed_when: false
+
+    # ── Gateway route ─────────────────────────────────────────────────────────
+
+    - name: "observability | Delete Grafana HTTPRoute"
+      kubernetes.core.k8s:
+        api_version: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: grafana
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      failed_when: false
+
+    # ── OTel Collector ────────────────────────────────────────────────────────
+
+    - name: "observability | Check OTel Collector release"
+      kubernetes.core.helm_info:
+        name: opentelemetry-collector
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_otel_check
+      failed_when: false
+
+    - name: "observability | Uninstall OTel Collector"
+      kubernetes.core.helm:
+        name: opentelemetry-collector
+        release_namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+      when: _obs_otel_check.status is defined
+
+    # ── Tempo ─────────────────────────────────────────────────────────────────
+
+    - name: "observability | Check Tempo release"
+      kubernetes.core.helm_info:
+        name: tempo
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_tempo_check
+      failed_when: false
+
+    - name: "observability | Uninstall Tempo"
+      kubernetes.core.helm:
+        name: tempo
+        release_namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+      when: _obs_tempo_check.status is defined
+
+    # ── Loki ──────────────────────────────────────────────────────────────────
+
+    - name: "observability | Check Loki release"
+      kubernetes.core.helm_info:
+        name: loki
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_loki_check
+      failed_when: false
+
+    - name: "observability | Uninstall Loki"
+      kubernetes.core.helm:
+        name: loki
+        release_namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+      when: _obs_loki_check.status is defined
+
+    # ── kube-prometheus-stack ─────────────────────────────────────────────────
+
+    - name: "observability | Uninstall kube-prometheus-stack"
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        release_namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+      failed_when: false
+
+    # ── CRDs left behind by Prometheus Operator ───────────────────────────────
+
+    - name: "observability | Find Prometheus Operator CRDs"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+      register: _obs_all_crds
+      failed_when: false
+
+    - name: "observability | Delete Prometheus Operator CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item.metadata.name }}"
+        state: absent
+      loop: >-
+        {{ _obs_all_crds.resources | default([]) |
+           selectattr('metadata.name', 'match',
+             '.*\\.(monitoring\\.coreos\\.com|grafana\\.integreatly\\.org)') | list }}
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    # ── PVCs (data is gone on teardown) ───────────────────────────────────────
+
+    - name: "observability | List PVCs in monitoring namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ observability_namespace }}"
+      register: _obs_pvcs
+      failed_when: false
+
+    - name: "observability | Delete PVCs"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      loop: "{{ _obs_pvcs.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    # ── Namespace ─────────────────────────────────────────────────────────────
+
+    - name: "observability | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ observability_namespace }}"
+        state: absent
+      failed_when: false

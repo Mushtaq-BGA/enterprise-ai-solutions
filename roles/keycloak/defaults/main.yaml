@@ -1,0 +1,34 @@
+---
+# =============================================================================
+# Keycloak Role Defaults
+# =============================================================================
+
+keycloak_version: "26.6.0"
+keycloak_namespace: "keycloak"
+keycloak_wait_timeout: "300s"
+
+# Gateway integration — only create HTTPRoute when our envoy_gateway component manages the gateway
+gateway_create: "{{ envoy_gateway_enabled | default(false) }}"
+
+# Keycloak Operator — kubectl-based install (no OLM required)
+keycloak_k8s_resources_base: "https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources"
+
+# Keycloak instance
+keycloak_instances: 1
+keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+keycloak_admin_user: "admin"
+keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+keycloak_db_vendor: "postgres"        # dev-file (embedded H2) | postgres
+keycloak_proxy_headers: "xforwarded"  # xforwarded | forwarded
+keycloak_http_enabled: true
+keycloak_health_enabled: true
+keycloak_metrics_enabled: true
+
+# PostgreSQL connection (used when keycloak_db_vendor == "postgres")
+# The postgresql role copies credentials as 'keycloak-db-secret' into this namespace.
+
+# Realm & client — configured by solution layers (e.g. keycloak_config role).
+# These defaults are used by the Envoy SecurityPolicy template if not overridden.
+keycloak_realm: "inference"
+keycloak_client_id: "inference-client"
+

@@ -1,0 +1,7 @@
+---
+# =============================================================================
+# Rook-Ceph Storage — Main Dispatcher
+# =============================================================================
+
+- name: "rook_ceph | {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

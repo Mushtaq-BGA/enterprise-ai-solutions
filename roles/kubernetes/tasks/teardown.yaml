@@ -1,0 +1,156 @@
+---
+# =============================================================================
+# Kubernetes — Teardown via Kubespray reset.yml
+# =============================================================================
+# Flow (driven by es_auto_installer.sh):
+#   Phase 1: _kubespray_prep_only=true → ensure kubespray stack → meta: end_role
+#   Phase 2: es_auto_installer.sh runs reset.yml directly (live output)
+#   Phase 3: normal run → node labels + restore kubectl/helm
+# Idempotent: cleanup tasks are no-ops when cluster is already down.
+# BYO mode: removes only labels we added — never destroys the cluster.
+# =============================================================================
+
+- name: "kubernetes | teardown | BYO cluster — skip destructive teardown"
+  when: existing_kubernetes | default('') | trim | length > 0
+  block:
+    - name: "kubernetes | teardown | BYO — remove workload-class labels"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: _byo_nodes
+      failed_when: false
+
+    - name: "kubernetes | teardown | BYO — unlabel nodes"
+      when: _byo_nodes.resources is defined
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ item.metadata.name }}"
+        definition:
+          metadata:
+            labels:
+              workload-class: null
+      loop: "{{ _byo_nodes.resources | default([]) | selectattr('metadata.labels.workload-class', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    - name: "kubernetes | teardown | BYO — done"
+      ansible.builtin.debug:
+        msg: "BYO cluster — removed labels only. Cluster left intact."
+
+- name: "kubernetes | teardown | BYO — end role"
+  when: existing_kubernetes | default('') | trim | length > 0
+  ansible.builtin.meta: end_role
+
+# ─── Regenerate inventory from current config ───────────────────────────
+
+- name: "kubernetes | teardown | Detect SSH requirement from inventory"
+  ansible.builtin.set_fact:
+    _k8s_needs_ssh: >-
+      {{
+        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
+        | unique
+        | reject('equalto', 'localhost')
+        | list
+        | length > 0
+      }}
+
+# ─── Check if cluster is still running ──────────────────────────────────
+# Avoids re-running reset.yml when cluster was already torn down
+# (e.g. es_auto_installer.sh ran reset.yml directly, then re-invokes for cleanup)
+
+- name: "kubernetes | teardown | Check if cluster is still running"
+  ansible.builtin.command:
+    cmd: kubectl cluster-info
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  changed_when: false
+  failed_when: false
+  register: _cluster_alive
+
+- name: "kubernetes | teardown | Show target"
+  ansible.builtin.debug:
+    msg: "Teardown target: needs_ssh={{ _k8s_needs_ssh }}"
+
+# ─── Remove workload-class node labels (BYO/existing-cluster path) ──────
+# Kubespray reset.yml wipes the nodes entirely, so labels are moot for
+# installer-provisioned clusters. For BYO mode (user's own cluster that
+# we don't reset), removing labels leaves the cluster in the same state
+# we found it. Idempotent — silently no-ops if labels are already absent.
+
+- name: "kubernetes | teardown | List nodes with workload-class label"
+  when: _cluster_alive.rc == 0
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _teardown_nodes
+  failed_when: false
+
+- name: "kubernetes | teardown | Remove workload-class label from nodes"
+  when:
+    - _cluster_alive.rc == 0
+    - _teardown_nodes.resources is defined
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels:
+          workload-class: null
+  loop: "{{ _teardown_nodes.resources | default([]) | selectattr('metadata.labels.workload-class', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  failed_when: false
+
+# ─── Ensure kubespray stack is present (clone + venv) ─────────────────────
+# Allows teardown to work even when install was never run. Only needed in the
+# prep pass, before es_auto_installer.sh runs reset.yml; the post-reset pass
+# has no use for it.
+
+- name: "kubernetes | teardown | Ensure kubespray stack"
+  ansible.builtin.include_tasks: kubespray_ensure.yaml
+  when: _kubespray_prep_only | default(false) | bool
+
+# ─── End role after prep (es_auto_installer.sh runs reset.yml from bash) ────
+
+- name: "kubernetes | teardown | End role (prep complete — reset.yml runs from caller)"
+  when: _kubespray_prep_only | default(false) | bool
+  meta: end_role
+
+- name: "kubernetes | teardown | Cluster already down — skip cleanup"
+  ansible.builtin.debug:
+    msg: "No running cluster detected. Proceeding to post-reset cleanup."
+  when: _cluster_alive.rc != 0
+
+# ─── Fix hostname resolution after Kubespray reset ─────────────────────
+# Kubespray renames the hostname (override_system_hostname) but reset.yml
+# does NOT restore it or update /etc/hosts.  Subsequent "become" tasks
+# fail with "Timed out waiting for become success" because sudo tries
+# to resolve the new hostname via DNS.
+- name: "kubernetes | teardown | Ensure hostname is resolvable"
+  become: false
+  ansible.builtin.shell:
+    cmd: |
+      hn=$(hostname)
+      if ! getent hosts "$hn" &>/dev/null; then
+        echo "127.0.1.1 $hn" | sudo tee -a /etc/hosts >/dev/null
+        echo "added"
+      else
+        echo "ok"
+      fi
+  register: _hostname_fix
+  changed_when: "'added' in _hostname_fix.stdout"
+
+# Kubespray reset.yml already removes ~/.kube, /etc/kubernetes, and the
+# {{ bin_dir }}/{kubectl,helm} binaries on every node. We do NOT reinstall
+# host tooling here — teardown must not mutate the host beyond removing the
+# cluster. kubectl/helm are operator prerequisites (see docs), not something
+# the installer restores. The local kubeconfig ({{ kubernetes_kubeconfig }})
+# is removed by es_auto_installer.sh after this pass. .kubespray is shared
+# across environments — never remove it during teardown.
+
+- name: "kubernetes | teardown | Kubernetes removed"
+  ansible.builtin.debug:
+    msg: "Kubernetes cluster reset."

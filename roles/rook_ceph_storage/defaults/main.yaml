@@ -1,0 +1,73 @@
+---
+# =============================================================================
+# Rook-Ceph Storage Role Defaults
+# =============================================================================
+
+# --- Rook Operator ---
+rook_ceph_operator_chart_repo: "https://charts.rook.io/release"
+rook_ceph_operator_chart_version: "1.17.5"
+rook_ceph_operator_namespace: "rook-ceph"
+rook_ceph_image: "quay.io/ceph/ceph:v19.2.1"
+
+# --- OSD Configuration ---
+# Required. Per-node raw block devices backing the OSDs; keys are kubernetes node
+# names. These nodes are labelled with rook_ceph_storage_node_label and pin every
+# Ceph daemon (mon/mgr/osd/mds) via nodeAffinity, so the map defines the storage
+# tier — not just the disks. Install fails preflight when empty.
+#   rook_ceph_devices:
+#     node-1: [/dev/nvme1n1, /dev/nvme2n1]
+#     node-2: [/dev/nvme1n1]
+rook_ceph_devices: {}
+
+# Label applied to every node in rook_ceph_devices; Ceph daemons require it.
+rook_ceph_storage_node_label_key: "type"
+rook_ceph_storage_node_label_value: "storage-node"
+
+# --- Replication ---
+# auto: 2 replicas for 2-node clusters, 3 for 3+ nodes
+rook_ceph_replica_count: "auto"
+
+rook_ceph_rbd_storage_class: "ceph-block"
+rook_ceph_fs_storage_class: "ceph-fs"
+rook_ceph_default_storage_class: "ceph-block"
+
+rook_ceph_fs_enabled: true
+
+rook_ceph_block_pool_name: "replicapool"
+
+rook_ceph_filesystem_name: "cephfs"
+rook_ceph_mds_active_count: 1
+
+rook_ceph_dashboard_enabled: false
+
+rook_ceph_toolbox_enabled: true
+
+# --- Resource limits for Ceph daemons ---
+rook_ceph_osd_memory_limit: "4Gi"
+rook_ceph_osd_memory_request: "2Gi"
+rook_ceph_osd_cpu_request: "1"
+
+rook_ceph_mon_memory_limit: "2Gi"
+rook_ceph_mon_memory_request: "1Gi"
+
+rook_ceph_mgr_memory_limit: "1Gi"
+rook_ceph_mgr_memory_request: "512Mi"
+
+# --- Teardown ---
+# Off by default: the disks are the user's, and a wrong path here (a root disk,
+# a device reused since install) destroys the node. Teardown always clears
+# /var/lib/rook; wiping the OSD devices is opt-in. Left off, wipe them by hand
+# (blkdiscard -f) before re-installing.
+rook_ceph_teardown_wipe_devices: false
+
+# --- Timeouts ---
+rook_ceph_operator_wait_timeout: "300s"
+rook_ceph_cluster_health_delay: 15
+rook_ceph_cluster_health_retries: 80
+
+# --- Validation ---
+rook_ceph_validate_min_up_osds: 1
+rook_ceph_validate_pvc_bind: true
+rook_ceph_validate_pvc_size: "100Mi"
+rook_ceph_validate_pvc_namespace: "rook-ceph"
+rook_ceph_validate_pvc_timeout_seconds: 120
