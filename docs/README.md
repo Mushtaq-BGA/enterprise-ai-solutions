@@ -1,4 +1,4 @@
-# Intel® AI Enterprise Solutions Documentation
+# Intel® AI for Enterprise Solutions Documentation
 
 The technical documentation for deploying and operating the platform. Start with
 **Get started** to understand what it is and stand it up, use the **Deploy**
@@ -12,7 +12,7 @@ Understand what the platform is, check your machine meets the bar, then deploy i
 
 | Guide | What it covers |
 |-------|----------------|
-| [Meet Intel® AI Enterprise Solutions](meet/meet.md) | What the platform is, the problem it solves, and the layers it deploys |
+| [Meet Intel® AI for Enterprise Solutions](meet/meet.md) | What the platform is, the problem it solves, and the layers it deploys |
 | [Prerequisites](quickstart/prerequisites.md) | Everything needed before running the installer |
 | [Getting Started](quickstart/quickstart.md) | Three deployment paths — pick one and follow it end to end |
 

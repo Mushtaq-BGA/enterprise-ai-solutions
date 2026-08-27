@@ -1,10 +1,10 @@
-# Meet Intel® AI Enterprise Solutions
+# Meet Intel® AI for Enterprise Solutions
 
 [← Docs Index](../README.md)
 
 > **One automated workflow connecting Intel's enterprise AI portfolio — self-hosted, on-premises, and ready to deploy.**
 
-Intel® AI Enterprise Solutions is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
+Intel® AI for Enterprise Solutions is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
 
 The repository acts as the integration and automation layer across Intel's enterprise AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
 
@@ -24,13 +24,13 @@ The platform brings together:
 
 ---
 
-## Why Choose Intel® AI Enterprise Solutions Instead of Building It Yourself?
+## Why Choose Intel® AI for Enterprise Solutions Instead of Building It Yourself?
 
 Enterprise AI requires more than a model server.
 
 Teams also need Kubernetes, networking, storage, TLS, identity, model routing, observability, and workload placement. Building and integrating those layers individually can take significant engineering effort — weeks to months.
 
-AI Enterprise Solutions deploys them through one environment-based workflow:
+AI for Enterprise Solutions deploys them through one environment-based workflow:
 
 ```bash
 ./es_auto_installer.sh install --all --env <name>
@@ -50,7 +50,7 @@ Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
 
 ---
 
-## What Makes Intel® AI Enterprise Solutions Different?
+## What Makes Intel® AI for Enterprise Solutions Different?
 
 ### One entry point
 

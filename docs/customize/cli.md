@@ -1,8 +1,8 @@
-# Intel® AI Enterprise Solutions CLI Reference
+# Intel® AI for Enterprise Solutions CLI Reference
 
 [← Docs Index](../README.md)
 
-All `es_auto_installer.sh` and `model-manager` commands for Intel® AI Enterprise Solutions run from the repo root.
+All `es_auto_installer.sh` and `model-manager` commands for Intel® AI for Enterprise Solutions run from the repo root.
 
 ```
 ./es_auto_installer.sh <action> [target] [--env <name>] [options]

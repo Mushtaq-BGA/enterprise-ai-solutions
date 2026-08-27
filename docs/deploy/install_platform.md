@@ -1,8 +1,8 @@
-# Deployment Guide — Install Intel® AI Enterprise Solutions On-Premises
+# Deployment Guide — Install Intel® AI for Enterprise Solutions On-Premises
 
 [← Docs Index](../README.md)
 
-This guide walks you through installing Intel® AI Enterprise Solutions on-premises, step by step, from bare metal to a running self-hosted AI stack. No Kubernetes experience needed.
+This guide walks you through installing Intel® AI for Enterprise Solutions on-premises, step by step, from bare metal to a running self-hosted AI stack. No Kubernetes experience needed.
 
 ---
 

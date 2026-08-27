@@ -1,10 +1,10 @@
-# Intel® AI Enterprise Solutions Configuration Reference
+# Intel® AI for Enterprise Solutions Configuration Reference
 
 [← Docs Index](../README.md)
 
 ## What Does global_config.yaml Control?
 
-An Intel® AI Enterprise Solutions deployment is described by **one file**:
+An Intel® AI for Enterprise Solutions deployment is described by **one file**:
 
 ```
 env/<name>/global_config.yaml

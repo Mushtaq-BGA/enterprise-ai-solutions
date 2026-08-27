@@ -1,8 +1,8 @@
-# Getting Started with Intel® AI Enterprise Solutions
+# Getting Started with Intel® AI for Enterprise Solutions
 
 [← Docs Index](../README.md)
 
-Three ways to deploy Intel® AI Enterprise Solutions — single node, multi-node, or an existing (bring-your-own) Kubernetes cluster — depending on your setup. Pick one and follow it end to end.
+Three ways to deploy Intel® AI for Enterprise Solutions — single node, multi-node, or an existing (bring-your-own) Kubernetes cluster — depending on your setup. Pick one and follow it end to end.
 
 ---
 
