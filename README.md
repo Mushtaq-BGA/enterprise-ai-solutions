@@ -21,7 +21,7 @@ Intel® AI Enterprise Solutions wires these pieces together in a pre-integrated,
 
 A single installer script, `es_auto_installer.sh`, takes bare-metal nodes through Kubernetes provisioning, platform services (networking, security, observability), model serving, and AI gateway setup — delivering a production-ready AI platform with OpenAI-compatible endpoints in one run.
 
-The end result: teams get a secured, load-balanced stack where they can immediately serve LLM models, run RAG pipelines, and monitor everything through a unified gateway. Start with defaults, then configure or extend as needed.
+The end result: teams get a secured, load-balanced inference stack with OpenAI-compatible endpoints, monitored through a unified gateway. This release delivers the inference foundation — the base on top of which RAG and agentic services can be deployed. Start with defaults, then configure or extend as needed.
 
 > Want the full picture? See [Architecture](docs/reference/architecture.md) and [Meet AI Enterprise Solutions](docs/meet/meet.md).
 
