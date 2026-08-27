@@ -1,8 +1,8 @@
-# Integrating Applications with Intel® AI for Enterprise Solutions
+# Integrating Applications with Intel® AI Enterprise Solutions
 
 [← Docs Index](../README.md)
 
-How to integrate **your tool, framework, or application** with the Intel® AI for Enterprise Solutions inference stack — without modifying the stack itself.
+How to integrate **your tool, framework, or application** with the Intel® AI Enterprise Solutions inference stack — without modifying the stack itself.
 
 > **TL;DR** — point any OpenAI-compatible client at the inference endpoint and pass a Bearer token. With `auth_provider=litellm`: use `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key. With `auth_provider=keycloak`: use `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT.
 

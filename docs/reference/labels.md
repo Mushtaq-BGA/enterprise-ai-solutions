@@ -1,8 +1,8 @@
-# Namespace Security Labels in Intel® AI for Enterprise Solutions
+# Namespace Security Labels in Intel® AI Enterprise Solutions
 
 [← Docs Index](../README.md)
 
-Pod Security Admission (PSA) and Istio ambient labels applied to every namespace Intel® AI for Enterprise Solutions manages. Live cluster state (`kubectl get namespaces`, 2026-06-02). Code source of truth: role `tasks/install.yaml` files.
+Pod Security Admission (PSA) and Istio ambient labels applied to every namespace Intel® AI Enterprise Solutions manages. Live cluster state (`kubectl get namespaces`, 2026-06-02). Code source of truth: role `tasks/install.yaml` files.
 
 ## Legend
 
